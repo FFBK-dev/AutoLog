@@ -141,11 +141,9 @@ def run_once():
                         "content": [
                             {
                                 "type": "text",
-                                "text": (
-                                    f"Filename: {filename_context}\n"
-                                    f"Existing description: {description_context}\n"
-                                    "Generate the keyframe description:"
-                                )
+                                "text": f"""Filename: {filename_context}
+Existing description: {description_context}
+Generate the keyframe description:"""
                             },
                             {
                                 "type": "image_url",
