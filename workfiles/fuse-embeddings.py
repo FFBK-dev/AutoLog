@@ -83,8 +83,7 @@ def run_once():
             update_payload = {
                 "fieldData": {
                     "Keyframe_Fused_Embedding": fused_json,
-                    "Keyframe_Status": "Fused"
-                }
+                    "Keyframe_Status": "Embeddings Fused
             }
             update_resp = requests.patch(update_url, headers=headers, json=update_payload, verify=False)
             if update_resp.status_code == 200:

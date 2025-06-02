@@ -5,6 +5,7 @@ import urllib3
 import warnings
 import time
 import openai
+import math
 
 # Suppress SSL warnings
 warnings.filterwarnings('ignore')
@@ -19,6 +20,7 @@ layout_footage = "Footage"
 username = "Background"
 password = "july1776"
 openai_api_key = "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"
+chunk_size = 120  # 10 minutes worth of keyframes (5 sec intervals)
 
 client = openai.OpenAI(api_key=openai_api_key)
 
@@ -90,50 +92,95 @@ def run_once():
         existing_description = footage_field_data.get("INFO_Description", "")
         filename = footage_field_data.get("Filename", "")
 
-        # Build full text block to send to OpenAI
-        csv_lines = ["Frame,Visual Description,Audio Transcript"]
-        for kf in sorted(keyframes, key=lambda x: x.get("KeyframeID", "")):
-            desc = kf.get("Keyframe_Description", "").replace("\n", " ").strip()
-            trans = kf.get("Keyframe_Transcript", "").replace("\n", " ").strip()
-            frame_id = kf.get("KeyframeID", "")
-            csv_lines.append(f"{frame_id},{desc},{trans}")
+        # Sort keyframes
+        keyframes_sorted = sorted(keyframes, key=lambda x: x.get("KeyframeID", ""))
 
-        combined_csv = "\n".join(csv_lines)
+        chunk_summaries = []
+        full_csv_lines = []
 
-        system_prompt = (
-            "You are generating a concise but thorough description of a video clip for archival purposes. "
-            "The input provides frame-level visual descriptions and transcripts, plus any prior notes or filename hints. "
-            "Do not use phrases like 'this video shows...' or 'the clip contains...'. "
-            "Just provide a clean, direct summary as if writing catalog metadata. "
-            "Length: ~2-3 sentences."
-        )
+        # Process chunks
+        for i in range(0, len(keyframes_sorted), chunk_size):
+            chunk = keyframes_sorted[i:i + chunk_size]
+            csv_lines = ["Frame,Visual Description,Audio Transcript"]
+            for kf in chunk:
+                desc = kf.get("Keyframe_Description", "").replace("\n", " ").strip()
+                trans = kf.get("Keyframe_Transcript", "").replace("\n", " ").strip()
+                frame_id = kf.get("KeyframeID", "")
+                csv_lines.append(f"{frame_id},{desc},{trans}")
+                full_csv_lines.append(f"{frame_id},{desc},{trans}")
 
-        user_prompt = f"""Filename: {filename}
+            combined_csv = "\n".join(csv_lines)
+
+            system_prompt = (
+                "You are generating a concise but thorough description of a video chunk for archival purposes. "
+                "The input provides frame-level visual descriptions and transcripts. "
+                "Do not use phrases like 'this video shows...' or 'the clip contains...'. "
+                "Just provide a clean, direct summary as if writing catalog metadata. "
+                "Length: ~2-3 sentences."
+            )
+
+            user_prompt = f"""Filename: {filename}
 Existing description: {existing_description}
 Frame-level data:
 {combined_csv}"""
 
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.3
+                )
+
+                chunk_summary = response.choices[0].message.content.strip()
+                print(f"📝 Chunk {i//chunk_size + 1} summary: {chunk_summary}")
+                chunk_summaries.append(chunk_summary)
+
+            except Exception as e:
+                print(f"❌ OpenAI error (chunk {i//chunk_size + 1}): {e}")
+
+        # Combine chunk summaries into master description
+        combined_summaries_text = "\n".join(chunk_summaries)
+
+        system_prompt_final = (
+            "You are generating a master description of a video file for archival purposes. "
+            "You are given summaries of individual chunks of the video. "
+            "Write a concise and thorough catalog description, without introductory phrases, just clean catalog metadata."
+        )
+
+        user_prompt_final = f"""Filename: {filename}
+Existing description: {existing_description}
+Chunk summaries:
+{combined_summaries_text}"""
+
         try:
-            response = client.chat.completions.create(
+            response_final = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": system_prompt_final},
+                    {"role": "user", "content": user_prompt_final}
                 ],
                 temperature=0.3
             )
 
-            final_summary = response.choices[0].message.content.strip()
-            print(f"📝 Summary for {footage_id}: {final_summary}")
+            final_summary = response_final.choices[0].message.content.strip()
+            print(f"📝 Final Summary for {footage_id}: {final_summary}")
 
             # Update footage record
             update_url = f"https://{server}/fmi/data/vLatest/databases/{db_encoded}/layouts/{layout_footage}/records/{footage_record_id}"
-            update_payload = {"fieldData": {"INFO_Description": final_summary}}
+            update_payload = {
+                "fieldData": {
+                    "INFO_Description": final_summary,
+                    "INFO_Video_Events": "\n".join(["Frame,Visual Description,Audio Transcript"] + full_csv_lines)
+                }
+            }
             update_resp = requests.patch(update_url, headers=headers, json=update_payload, verify=False)
             if update_resp.status_code == 200:
                 print(f"✅ Updated footage record {footage_id}")
 
-                # NOW: update child keyframes to Fully Processed
+                # Update child keyframes to Fully Processed
                 update_keyframes_url = f"https://{server}/fmi/data/vLatest/databases/{db_encoded}/layouts/{layout_keyframes}/_find"
                 child_query = {"query": [{"FootageID": footage_id}]}
                 child_resp = requests.post(update_keyframes_url, headers=headers, json=child_query, verify=False)
@@ -156,7 +203,7 @@ Frame-level data:
                 print(f"❌ Failed to update footage: {update_resp.status_code}")
 
         except Exception as e:
-            print(f"❌ OpenAI error: {e}")
+            print(f"❌ OpenAI error (final synthesis): {e}")
 
     # Logout
     logout_url = f"https://{server}/fmi/data/vLatest/databases/{db_encoded}/sessions/{token}"
