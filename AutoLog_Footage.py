@@ -344,19 +344,25 @@ class MultiThreadedKeyframeProcessor:
         for record in records:
             field_data = record["fieldData"]
             keyframe_id = field_data.get("KeyframeID")
-            timecode = field_data.get("Timecode_IN")
+            timecode = field_data.get("TC_IN_Seconds")
             video_path = field_data.get("Footage::SPECS_Filepath_Server")
             
-            if all([keyframe_id, timecode, video_path]):
-                tasks.append(ProcessingTask(
-                    record_id=record["recordId"],
-                    record_data={
-                        'keyframe_id': keyframe_id,
-                        'timecode': timecode,
-                        'video_path': video_path
-                    },
-                    task_type='thumbnail'
-                ))
+            if not all([keyframe_id, timecode, video_path]):
+                print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
+                if not keyframe_id: print("   - Missing KeyframeID")
+                if not timecode: print("   - Missing TC_IN_Seconds")
+                if not video_path: print("   - Missing video path")
+                continue
+                
+            tasks.append(ProcessingTask(
+                record_id=record["recordId"],
+                record_data={
+                    'keyframe_id': keyframe_id,
+                    'timecode': timecode,
+                    'video_path': video_path
+                },
+                task_type='thumbnail'
+            ))
         
         if not tasks:
             return
@@ -458,20 +464,26 @@ class MultiThreadedKeyframeProcessor:
             field_data = record["fieldData"]
             keyframe_id = field_data.get("KeyframeID")
             footage_id = field_data.get("FootageID")
-            timecode = field_data.get("Timecode_IN")
+            timecode = field_data.get("TC_IN_Seconds")
             video_path = field_data.get("Footage::SPECS_Filepath_Server")
             
-            if all([keyframe_id, timecode, video_path]):
-                tasks.append(ProcessingTask(
-                    record_id=record["recordId"],
-                    record_data={
-                        'keyframe_id': keyframe_id,
-                        'footage_id': footage_id,
-                        'timecode': timecode,
-                        'video_path': video_path
-                    },
-                    task_type='caption'
-                ))
+            if not all([keyframe_id, timecode, video_path]):
+                print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
+                if not keyframe_id: print("   - Missing KeyframeID")
+                if not timecode: print("   - Missing TC_IN_Seconds")
+                if not video_path: print("   - Missing video path")
+                continue
+                
+            tasks.append(ProcessingTask(
+                record_id=record["recordId"],
+                record_data={
+                    'keyframe_id': keyframe_id,
+                    'footage_id': footage_id,
+                    'timecode': timecode,
+                    'video_path': video_path
+                },
+                task_type='caption'
+            ))
         
         if not tasks:
             return
@@ -699,19 +711,25 @@ Generate keyframe description:"""
         for record in records:
             field_data = record["fieldData"]
             keyframe_id = field_data.get("KeyframeID")
-            timecode = field_data.get("Timecode_IN")
+            timecode = field_data.get("TC_IN_Seconds")
             video_path = field_data.get("Footage::SPECS_Filepath_Server")
             
-            if all([keyframe_id, timecode, video_path]):
-                tasks.append(ProcessingTask(
-                    record_id=record["recordId"],
-                    record_data={
-                        'keyframe_id': keyframe_id,
-                        'timecode': timecode,
-                        'video_path': video_path
-                    },
-                    task_type='audio'
-                ))
+            if not all([keyframe_id, timecode, video_path]):
+                print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
+                if not keyframe_id: print("   - Missing KeyframeID")
+                if not timecode: print("   - Missing TC_IN_Seconds")
+                if not video_path: print("   - Missing video path")
+                continue
+                
+            tasks.append(ProcessingTask(
+                record_id=record["recordId"],
+                record_data={
+                    'keyframe_id': keyframe_id,
+                    'timecode': timecode,
+                    'video_path': video_path
+                },
+                task_type='audio'
+            ))
         
         if not tasks:
             return
@@ -761,8 +779,7 @@ Generate keyframe description:"""
             # First check if video has audio streams
             probe_cmd = [
                 CONFIG['ffmpeg_path'],
-                "-i", video_path,
-                "-loglevel", "error"
+                "-i", video_path
             ]
             
             probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
