@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import json
 import requests
@@ -9,7 +11,10 @@ import openai
 import base64
 import numpy as np
 import whisper
+import concurrent.futures
+import threading
 from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
 # Suppress SSL warnings
 warnings.filterwarnings('ignore')
@@ -27,7 +32,11 @@ CONFIG = {
     'layout_keyframes': 'Keyframes',
     'layout_footage': 'Footage',
     'chunk_size': 120,  # For video description processing
-    'loop_interval': 30  # seconds between processing cycles
+    'loop_interval': 30,  # seconds between processing cycles
+    'max_workers_thumbnails': 4,  # Parallel thumbnail generation
+    'max_workers_captions': 3,    # Parallel caption generation (API rate limited)
+    'max_workers_audio': 2,       # Parallel audio transcription (CPU intensive)
+    'max_workers_api': 2,         # General API calls
 }
 
 # Status definitions
@@ -42,9 +51,15 @@ STATUSES = {
     'FULLY_PROCESSED': '8 - Fully Processed'
 }
 
-# Initialize OpenAI and Whisper
+# Initialize OpenAI
 openai.api_key = CONFIG['openai_api_key']
-whisper_model = whisper.load_model("base")
+
+@dataclass
+class ProcessingTask:
+    """Data class for processing tasks"""
+    record_id: str
+    record_data: Dict
+    task_type: str
 
 class FileMakerSession:
     """Handles FileMaker authentication and API calls"""
@@ -56,6 +71,7 @@ class FileMakerSession:
         self.password = CONFIG['password']
         self.token = None
         self.headers = None
+        self._lock = threading.Lock()  # Thread safety for session management
     
     def __enter__(self):
         self.authenticate()
@@ -91,430 +107,804 @@ class FileMakerSession:
             requests.delete(logout_url, headers={"Authorization": f"Bearer {self.token}"}, verify=False)
     
     def find_records(self, layout: str, query: Dict) -> List[Dict]:
-        """Find records in FileMaker"""
-        find_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/_find"
-        find_response = requests.post(find_url, headers=self.headers, json={"query": [query]}, verify=False)
-        
-        if find_response.status_code != 200:
-            print(f"❌ Find failed: {find_response.status_code} {find_response.text}")
-            return []
-        
-        return find_response.json().get("response", {}).get("data", [])
+        """Find records in FileMaker - Thread safe"""
+        with self._lock:
+            all_records = []
+            offset = 1
+            limit = 500  # Process in chunks of 500
+            
+            while True:
+                find_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/_find"
+                find_payload = {
+                    "query": [query],
+                    "offset": offset,
+                    "limit": limit
+                }
+                
+                find_response = requests.post(find_url, headers=self.headers, json=find_payload, verify=False)
+                
+                if find_response.status_code != 200:
+                    break
+                
+                response_data = find_response.json()
+                records = response_data.get("response", {}).get("data", [])
+                
+                if not records:
+                    break
+                    
+                all_records.extend(records)
+                
+                # Check if we got less than the limit (meaning no more records)
+                if len(records) < limit:
+                    break
+                    
+                offset += len(records)
+            
+            return all_records
     
     def update_record(self, layout: str, record_id: str, field_data: Dict) -> bool:
-        """Update a record in FileMaker"""
-        update_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/records/{record_id}"
-        update_payload = {"fieldData": field_data}
-        update_resp = requests.patch(update_url, headers=self.headers, json=update_payload, verify=False)
-        return update_resp.status_code == 200
+        """Update a record in FileMaker - Thread safe"""
+        with self._lock:
+            update_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/records/{record_id}"
+            update_payload = {"fieldData": field_data}
+            update_resp = requests.patch(update_url, headers=self.headers, json=update_payload, verify=False)
+            return update_resp.status_code == 200
     
     def upload_container(self, layout: str, record_id: str, field_name: str, file_path: str, filename: str) -> bool:
-        """Upload file to container field"""
-        upload_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/records/{record_id}/containers/{field_name}/1"
-        with open(file_path, "rb") as f:
-            files = {"upload": (filename, f, "image/jpeg")}
-            upload_resp = requests.post(
-                upload_url, 
-                headers={"Authorization": f"Bearer {self.token}"}, 
-                files=files, 
-                verify=False
-            )
-        return upload_resp.status_code == 200
+        """Upload file to container field - Thread safe"""
+        with self._lock:
+            upload_url = f"https://{self.server}/fmi/data/vLatest/databases/{self.db_encoded}/layouts/{layout}/records/{record_id}/containers/{field_name}/1"
+            with open(file_path, "rb") as f:
+                files = {"upload": (filename, f, "image/jpeg")}
+                upload_resp = requests.post(
+                    upload_url, 
+                    headers={"Authorization": f"Bearer {self.token}"}, 
+                    files=files, 
+                    verify=False
+                )
+            return upload_resp.status_code == 200
 
-class KeyframeProcessor:
-    """Main processor for keyframe pipeline"""
+class MultiThreadedKeyframeProcessor:
+    """Main processor for keyframe pipeline with multithreading"""
     
     def __init__(self):
         self.session = None
+        self.whisper_model = None
+        self._whisper_lock = threading.Lock()  # Whisper model might not be thread-safe
+        
+        # Load Whisper model once
+        self.whisper_model = whisper.load_model("base")
     
     def debug_records(self):
-        """Debug function to see what records exist"""
-        print("🔍 DEBUG: Checking all keyframe records...")
-        
-        # Find ALL keyframes by searching for any non-empty KeyframeID
-        query_payload = {"query": [{"KeyframeID": "*"}]}
-        find_response = requests.post(
-            f"https://{self.session.server}/fmi/data/vLatest/databases/{self.session.db_encoded}/layouts/{CONFIG['layout_keyframes']}/_find",
-            headers=self.session.headers, 
-            json=query_payload,
-            verify=False
+        """Debug function to see what records exist in each status"""
+        # Use our paginated find_records method to get ALL records
+        records = self.session.find_records(
+            CONFIG['layout_keyframes'],
+            {"KeyframeID": "*"}
         )
         
-        if find_response.status_code != 200:
-            print(f"❌ Debug find failed: {find_response.status_code} {find_response.text}")
+        if not records:
+            print("❌ No records found")
             return
         
-        records = find_response.json().get("response", {}).get("data", [])
-        print(f"📊 Total keyframe records found: {len(records)}")
+        # Count records in each status
+        status_counts = {status: 0 for status in STATUSES.values()}
+        status_counts["NO_STATUS"] = 0
         
-        status_counts = {}
-        for record in records[:10]:  # Show first 10 records
+        # Track records by status with their IDs
+        status_details = {status: [] for status in STATUSES.values()}
+        status_details["NO_STATUS"] = []
+        
+        for record in records:
             field_data = record["fieldData"]
             status = field_data.get("Keyframe_Status", "NO_STATUS")
-            keyframe_id = field_data.get("KeyframeID", "NO_ID")
-            
-            status_counts[status] = status_counts.get(status, 0) + 1
-            
-            print(f"  Record {record['recordId']}: {keyframe_id} - Status: '{status}'")
-            print(f"    Fields available: {list(field_data.keys())}")
+            keyframe_id = field_data.get("KeyframeID", "UNKNOWN")
+            footage_id = field_data.get("FootageID", "UNKNOWN")
+            status_counts[status] += 1
+            status_details[status].append(f"{keyframe_id} ({footage_id})")
         
-        print(f"\n📈 Status summary:")
-        for status, count in status_counts.items():
-            print(f"  '{status}': {count} records")
+        # Print status breakdown
+        print("\n📊 Status Breakdown:")
+        print(f"Total Records: {len(records)}")
+        print("-" * 80)
+        
+        # Show all statuses in order, even if 0
+        for status_key in ["NO_STATUS"] + list(STATUSES.values()):
+            count = status_counts[status_key]
+            print(f"{status_key}: {count} records")
+            
+            # For non-zero counts in interesting statuses, show details
+            if count > 0 and status_key in [
+                STATUSES['PENDING'],
+                STATUSES['THUMBNAIL_CREATED'],
+                STATUSES['CAPTION_GENERATED'],
+                STATUSES['EMBEDDINGS_READY'],
+                STATUSES['EMBEDDINGS_FUSED'],
+                STATUSES['AUDIO_TRANSCRIBED']
+            ]:
+                print(f"   🔍 Sample records: {', '.join(status_details[status_key][:5])}")
+                if len(status_details[status_key]) > 5:
+                    print(f"   ... and {len(status_details[status_key]) - 5} more")
+        
+        print("-" * 80)
+        
+        # Alert about potentially stuck records
+        for status in [
+            STATUSES['PENDING'],
+            STATUSES['THUMBNAIL_CREATED'],
+            STATUSES['CAPTION_GENERATED'],
+            STATUSES['EMBEDDINGS_READY'],
+            STATUSES['EMBEDDINGS_FUSED'],
+            STATUSES['AUDIO_TRANSCRIBED']
+        ]:
+            if status_counts[status] > 0:
+                print(f"⚠️  Found {status_counts[status]} records potentially stuck in {status}")
+                print(f"   First few records: {', '.join(status_details[status][:3])}")
     
+    def synchronize_keyframe_statuses(self):
+        """Ensure all keyframes for each footage are at the same processing stage"""
+        try:
+            # Get all keyframes grouped by FootageID
+            all_keyframes = self.session.find_records(
+                CONFIG['layout_keyframes'],
+                {"KeyframeID": "*"}
+            )
+            
+            # Group by FootageID
+            footage_groups = {}
+            for record in all_keyframes:
+                footage_id = record["fieldData"].get("FootageID")
+                if footage_id:
+                    if footage_id not in footage_groups:
+                        footage_groups[footage_id] = []
+                    footage_groups[footage_id].append(record)
+            
+            # Status order for synchronization
+            status_order = [
+                STATUSES['PENDING'],
+                STATUSES['THUMBNAIL_CREATED'],
+                STATUSES['CAPTION_GENERATED'],
+                STATUSES['EMBEDDINGS_READY'],
+                STATUSES['EMBEDDINGS_FUSED'],
+                STATUSES['AUDIO_TRANSCRIBED'],
+                STATUSES['VIDEO_DESCRIPTION_GENERATED'],
+                STATUSES['FULLY_PROCESSED']
+            ]
+            
+            synced_count = 0
+            for footage_id, keyframes in footage_groups.items():
+                # Find the least advanced status
+                min_status_idx = len(status_order) - 1
+                current_statuses = set()
+                
+                for kf in keyframes:
+                    status = kf["fieldData"].get("Keyframe_Status")
+                    if status:
+                        current_statuses.add(status)
+                        try:
+                            status_idx = status_order.index(status)
+                            min_status_idx = min(min_status_idx, status_idx)
+                        except ValueError:
+                            continue
+                
+                # If we have multiple different statuses, synchronize to the least advanced
+                if len(current_statuses) > 1:
+                    target_status = status_order[min_status_idx]
+                    print(f"🔄 Synchronizing {footage_id} keyframes to {target_status}")
+                    print(f"   Current statuses: {', '.join(current_statuses)}")
+                    
+                    # Update all keyframes to the least advanced status
+                    for kf in keyframes:
+                        current_status = kf["fieldData"].get("Keyframe_Status")
+                        if current_status and current_status != target_status:
+                            if self.session.update_record(
+                                CONFIG['layout_keyframes'],
+                                kf["recordId"],
+                                {"Keyframe_Status": target_status}
+                            ):
+                                synced_count += 1
+            
+            if synced_count > 0:
+                print(f"✅ Synchronized {synced_count} keyframes to match their footage groups")
+                
+        except Exception as e:
+            print(f"❌ Error during status synchronization: {e}")
+
     def process_all_stages(self):
-        """Process all keyframe stages in sequence"""
+        """Process all keyframe stages in sequence with parallel processing"""
         with FileMakerSession() as session:
             self.session = session
             
-            # Add debug info
+            # Quick status overview
             self.debug_records()
             
-            # Process each stage in order
-            self.process_thumbnails()
-            self.process_captions()
+            # Synchronize statuses before processing
+            self.synchronize_keyframe_statuses()
+            
+            # Process each stage in order with threading
+            self.process_thumbnails_parallel()
+            self.process_captions_parallel()
             # Skip embeddings - handled by FileMaker PSOS
-            self.process_embedding_fusion()
-            self.process_audio_transcription()
-            self.process_video_descriptions()
+            self.process_embedding_fusion_parallel()
+            self.process_audio_transcription_parallel()
+            self.process_video_descriptions()  # Keep serial for complex logic
     
-    def process_thumbnails(self):
-        """Stage 1->2: Generate thumbnails for pending keyframes"""
-        print("🖼️ Processing thumbnails...")
+    def process_thumbnails_parallel(self):
+        """Stage 1->2: Generate thumbnails for pending keyframes in parallel"""
         records = self.session.find_records(
             CONFIG['layout_keyframes'], 
             {"Keyframe_Status": STATUSES['PENDING']}
         )
         
         if not records:
-            print("✅ No pending keyframes found for thumbnail generation")
             return
         
-        print(f"📋 Found {len(records)} pending keyframes")
-        
+        # Create tasks for parallel processing
+        tasks = []
         for record in records:
+            field_data = record["fieldData"]
+            keyframe_id = field_data.get("KeyframeID")
+            timecode = field_data.get("Timecode_IN")
+            video_path = field_data.get("Footage::SPECS_Filepath_Server")
+            
+            if all([keyframe_id, timecode, video_path]):
+                tasks.append(ProcessingTask(
+                    record_id=record["recordId"],
+                    record_data={
+                        'keyframe_id': keyframe_id,
+                        'timecode': timecode,
+                        'video_path': video_path
+                    },
+                    task_type='thumbnail'
+                ))
+        
+        if not tasks:
+            return
+        
+        # Process thumbnails in parallel
+        print(f"🎬 Processing {len(tasks)} thumbnails...")
+        successful = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG['max_workers_thumbnails']) as executor:
+            future_to_task = {executor.submit(self.process_single_thumbnail, task): task for task in tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                try:
+                    result = future.result()
+                    if result['success']:
+                        successful += 1
+                except Exception:
+                    pass  # Silently handle errors
+        
+        print(f"✅ Thumbnails: {successful}/{len(tasks)} completed")
+    
+    def process_single_thumbnail(self, task: ProcessingTask) -> Dict:
+        """Process a single thumbnail generation task"""
+        try:
+            record_id = task.record_id
+            keyframe_id = task.record_data['keyframe_id']
+            timecode = task.record_data['timecode']
+            video_path = task.record_data['video_path']
+            
+            # Check if video file exists and is accessible
+            if not os.path.exists(video_path):
+                return {'success': False, 'error': f'Video file not found: {video_path}'}
+            
             try:
-                record_id = record["recordId"]
-                field_data = record["fieldData"]
-                keyframe_id = field_data.get("KeyframeID")
-                timecode = field_data.get("Timecode_IN")
-                video_path = field_data.get("Footage::SPECS_Filepath_Server")
-                
-                print(f"🔍 Processing keyframe {keyframe_id}")
-                print(f"   Timecode: {timecode}")
-                print(f"   Video path: {video_path}")
-                
-                if not all([keyframe_id, timecode, video_path]):
-                    print(f"⚠️ Missing thumbnail data for record {record_id}")
-                    print(f"   KeyframeID: {keyframe_id}")
-                    print(f"   Timecode: {timecode}")
-                    print(f"   Video path: {video_path}")
-                    continue
-                
-                # Generate thumbnail
-                thumb_filename = f"thumbnail_{keyframe_id}.jpg"
-                thumb_path = os.path.join(CONFIG['tmp_dir'], thumb_filename)
-                
-                ffmpeg_cmd = [
-                    CONFIG['ffmpeg_path'], "-y", "-ss", timecode,
-                    "-i", video_path, "-frames:v", "1", thumb_path
-                ]
-                
-                print(f"🎬 Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
-                result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-                print(f"✅ FFmpeg completed successfully")
-                
-                # Check if thumbnail was created
-                if not os.path.exists(thumb_path):
-                    print(f"❌ Thumbnail file not created at {thumb_path}")
-                    continue
-                
-                print(f"📁 Thumbnail created at {thumb_path}")
-                
-                # Upload thumbnail
-                success = self.session.upload_container(
-                    CONFIG['layout_keyframes'], record_id, "Thumbnail", thumb_path, thumb_filename
+                with open(video_path, 'rb') as f:
+                    f.read(1)  # Try to read one byte
+            except (OSError, IOError) as e:
+                return {'success': False, 'error': f'Video file not accessible: {e}'}
+            
+            # Generate thumbnail
+            thumb_filename = f"thumbnail_{keyframe_id}.jpg"
+            thumb_path = os.path.join(CONFIG['tmp_dir'], thumb_filename)
+            
+            ffmpeg_cmd = [
+                CONFIG['ffmpeg_path'], "-y", "-ss", timecode,
+                "-i", video_path, "-frames:v", "1", thumb_path,
+                "-loglevel", "quiet"  # Suppress FFmpeg output
+            ]
+            
+            result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+            
+            # Check if thumbnail was created
+            if not os.path.exists(thumb_path):
+                return {'success': False, 'error': f'Thumbnail file not created at {thumb_path}'}
+            
+            # Upload thumbnail
+            success = self.session.upload_container(
+                CONFIG['layout_keyframes'], record_id, "Thumbnail", thumb_path, thumb_filename
+            )
+            
+            if success:
+                # Update status
+                update_success = self.session.update_record(
+                    CONFIG['layout_keyframes'], record_id,
+                    {"Keyframe_Status": STATUSES['THUMBNAIL_CREATED']}
                 )
-                
-                if success:
-                    print(f"📤 Thumbnail uploaded successfully")
-                    # Update status
-                    update_success = self.session.update_record(
-                        CONFIG['layout_keyframes'], record_id,
-                        {"Keyframe_Status": STATUSES['THUMBNAIL_CREATED']}
-                    )
-                    if update_success:
-                        print(f"✅ Thumbnail created and status updated for {keyframe_id}")
-                    else:
-                        print(f"❌ Failed to update status for {keyframe_id}")
-                else:
-                    print(f"❌ Failed to upload thumbnail for {keyframe_id}")
                 
                 # Cleanup
                 if os.path.exists(thumb_path):
                     os.remove(thumb_path)
-                    print(f"🗑️ Cleaned up temporary file")
-                    
-            except subprocess.CalledProcessError as e:
-                print(f"❌ FFmpeg error for {keyframe_id}: {e}")
-                print(f"   stdout: {e.stdout}")
-                print(f"   stderr: {e.stderr}")
-            except Exception as e:
-                print(f"❌ Thumbnail error for {record_id}: {e}")
-                import traceback
-                print(f"   Full traceback: {traceback.format_exc()}")
+                
+                if update_success:
+                    return {'success': True}
+                else:
+                    return {'success': False, 'error': 'Failed to update status'}
+            else:
+                # Cleanup on failure
+                if os.path.exists(thumb_path):
+                    os.remove(thumb_path)
+                return {'success': False, 'error': 'Failed to upload thumbnail'}
+                
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f'FFmpeg error'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
     
-    def process_captions(self):
-        """Stage 2->3: Generate captions for thumbnails"""
-        print("📝 Processing captions...")
+    def process_captions_parallel(self):
+        """Stage 2->3: Generate captions for thumbnails in parallel"""
         records = self.session.find_records(
             CONFIG['layout_keyframes'], 
             {"Keyframe_Status": STATUSES['THUMBNAIL_CREATED']}
         )
         
-        gpt_prompt = (
-            "You are generating brief visual descriptions for frames from historical footage. "
-            "Keep it concise, under 70 tokens. Avoid phrases like 'this image shows'. "
-            "Just describe: people, setting, action, objects, and approximate shot type."
-        )
+        if not records:
+            return
         
+        # Create tasks
+        tasks = []
         for record in records:
-            try:
-                record_id = record["recordId"]
-                field_data = record["fieldData"]
-                keyframe_id = field_data.get("KeyframeID")
-                footage_id = field_data.get("FootageID")
-                timecode = field_data.get("Timecode_IN")
-                video_path = field_data.get("Footage::SPECS_Filepath_Server")
-                
-                # Get footage context
-                footage_records = self.session.find_records(
-                    CONFIG['layout_footage'], 
-                    {"INFO_FTG_ID": footage_id}
-                )
-                
-                filename_context = ""
-                description_context = ""
-                if footage_records:
-                    footage_fields = footage_records[0]["fieldData"]
-                    filename_context = footage_fields.get("INFO_Original_FileName", "")
-                    description_context = footage_fields.get("INFO_Description", "")
-                
-                # Generate thumbnail for captioning
-                thumb_path = os.path.join(CONFIG['tmp_dir'], f"caption_{keyframe_id}.jpg")
-                ffmpeg_cmd = [
-                    CONFIG['ffmpeg_path'], "-y", "-ss", timecode,
-                    "-i", video_path, "-frames:v", "1", thumb_path
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-                
-                # Get caption from OpenAI
-                with open(thumb_path, "rb") as f:
-                    image_base64 = base64.b64encode(f.read()).decode("utf-8")
-                
-                response = openai.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": gpt_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"""Filename: {filename_context}
+            field_data = record["fieldData"]
+            keyframe_id = field_data.get("KeyframeID")
+            footage_id = field_data.get("FootageID")
+            timecode = field_data.get("Timecode_IN")
+            video_path = field_data.get("Footage::SPECS_Filepath_Server")
+            
+            if all([keyframe_id, timecode, video_path]):
+                tasks.append(ProcessingTask(
+                    record_id=record["recordId"],
+                    record_data={
+                        'keyframe_id': keyframe_id,
+                        'footage_id': footage_id,
+                        'timecode': timecode,
+                        'video_path': video_path
+                    },
+                    task_type='caption'
+                ))
+        
+        if not tasks:
+            return
+        
+        # Process captions in parallel
+        print(f"📝 Processing {len(tasks)} captions...")
+        successful = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG['max_workers_captions']) as executor:
+            future_to_task = {executor.submit(self.process_single_caption, task): task for task in tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                try:
+                    result = future.result()
+                    if result['success']:
+                        successful += 1
+                except Exception:
+                    pass
+        
+        print(f"✅ Captions: {successful}/{len(tasks)} completed")
+    
+    def process_single_caption(self, task: ProcessingTask) -> Dict:
+        """Process a single caption generation task"""
+        try:
+            record_id = task.record_id
+            keyframe_id = task.record_data['keyframe_id']
+            footage_id = task.record_data['footage_id']
+            timecode = task.record_data['timecode']
+            video_path = task.record_data['video_path']
+            
+            gpt_prompt = (
+                "You are generating brief visual descriptions for frames from historical footage. "
+                "Keep it concise, under 65 tokens is crucial for further embedding gneeration. "
+                " Avoid phrases like 'this image shows'. "
+                "Just describe: people, setting, action, objects, and approximate shot type."
+            )
+            
+            # Get footage context
+            footage_records = self.session.find_records(
+                CONFIG['layout_footage'], 
+                {"INFO_FTG_ID": footage_id}
+            )
+            
+            filename_context = ""
+            description_context = ""
+            if footage_records:
+                footage_fields = footage_records[0]["fieldData"]
+                filename_context = footage_fields.get("INFO_Original_FileName", "")
+                description_context = footage_fields.get("INFO_Description", "")
+            
+            # Generate thumbnail for captioning
+            thumb_path = os.path.join(CONFIG['tmp_dir'], f"caption_{keyframe_id}.jpg")
+            ffmpeg_cmd = [
+                CONFIG['ffmpeg_path'], "-y", "-ss", timecode,
+                "-i", video_path, "-frames:v", "1", thumb_path,
+                "-loglevel", "quiet"  # Suppress FFmpeg output
+            ]
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            
+            # Get caption from OpenAI
+            with open(thumb_path, "rb") as f:
+                image_base64 = base64.b64encode(f.read()).decode("utf-8")
+            
+            response = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": gpt_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"""Filename: {filename_context}
 Existing description: {description_context}
 Generate keyframe description:"""
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-                                }
-                            ]
-                        }
-                    ]
-                )
-                
-                caption = response.choices[0].message.content.strip()
-                caption_clean = self.remove_markdown(caption)
-                
-                # Update record
-                success = self.session.update_record(
-                    CONFIG['layout_keyframes'], record_id,
-                    {
-                        "Keyframe_GPT_Caption": caption_clean,
-                        "Keyframe_Status": STATUSES['CAPTION_GENERATED']
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                            }
+                        ]
                     }
-                )
+                ]
+            )
+            
+            caption = response.choices[0].message.content.strip()
+            caption_clean = self.remove_markdown(caption)
+            
+            # Update record
+            success = self.session.update_record(
+                CONFIG['layout_keyframes'], record_id,
+                {
+                    "Keyframe_GPT_Caption": caption_clean,
+                    "Keyframe_Status": STATUSES['CAPTION_GENERATED']
+                }
+            )
+            
+            # Cleanup
+            if os.path.exists(thumb_path):
+                os.remove(thumb_path)
+            
+            if success:
+                return {'success': True, 'caption': caption_clean}
+            else:
+                return {'success': False, 'error': 'Failed to update record'}
                 
-                if success:
-                    print(f"✅ Caption generated for {keyframe_id}: {caption_clean}")
-                
-                # Cleanup
-                if os.path.exists(thumb_path):
-                    os.remove(thumb_path)
-                    
-            except Exception as e:
-                print(f"❌ Caption error for {record_id}: {e}")
+        except Exception as e:
+            # Cleanup on error
+            thumb_path = os.path.join(CONFIG['tmp_dir'], f"caption_{task.record_data['keyframe_id']}.jpg")
+            if os.path.exists(thumb_path):
+                os.remove(thumb_path)
+            return {'success': False, 'error': str(e)}
     
-    def process_embedding_fusion(self):
-        """Stage 4->5: Fuse embeddings (after FileMaker generates them)"""
-        print("🔗 Processing embedding fusion...")
+    def process_embedding_fusion_parallel(self):
+        """Stage 4->5: Fuse embeddings (after FileMaker generates them) in parallel"""
         records = self.session.find_records(
             CONFIG['layout_keyframes'], 
             {"Keyframe_Status": STATUSES['EMBEDDINGS_READY']}
         )
         
+        if not records:
+            return
+        
+        # Create tasks
+        tasks = []
         for record in records:
-            try:
-                record_id = record["recordId"]
-                field_data = record["fieldData"]
-                keyframe_id = field_data.get("KeyframeID")
-                
-                # Parse embeddings
-                text_embedding = json.loads(field_data.get("Keyframe_Text_Embedding", "[]"))
-                image_embedding = json.loads(field_data.get("Keyframe_Image_Embedding", "[]"))
-                
-                if not text_embedding or not image_embedding:
-                    print(f"⚠️ Missing embeddings for {keyframe_id}")
-                    continue
-                
-                text_array = np.array(text_embedding, dtype=np.float32)
-                image_array = np.array(image_embedding, dtype=np.float32)
-                
-                if text_array.shape != image_array.shape:
-                    print(f"⚠️ Shape mismatch for {keyframe_id}")
-                    continue
-                
-                # Fuse embeddings (simple average)
-                fused_array = 0.5 * text_array + 0.5 * image_array
-                fused_array /= np.linalg.norm(fused_array)
-                fused_json = json.dumps(fused_array.tolist())
-                
-                # Update record
-                success = self.session.update_record(
-                    CONFIG['layout_keyframes'], record_id,
-                    {
-                        "Keyframe_Fused_Embedding": fused_json,
-                        "Keyframe_Status": STATUSES['EMBEDDINGS_FUSED']
-                    }
-                )
-                
-                if success:
-                    print(f"✅ Embeddings fused for {keyframe_id}")
-                    
-            except Exception as e:
-                print(f"❌ Fusion error for {record_id}: {e}")
+            tasks.append(ProcessingTask(
+                record_id=record["recordId"],
+                record_data=record["fieldData"],
+                task_type='fusion'
+            ))
+        
+        if not tasks:
+            return
+            
+        # Process fusion in parallel
+        print(f"🔗 Processing {len(tasks)} new fusions...")
+        successful = 0
+        failed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG['max_workers_api']) as executor:
+            futures = [executor.submit(self.process_single_fusion, task) for task in tasks]
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result['success']:
+                        successful += 1
+                    else:
+                        failed += 1
+                        print(f"❌ Fusion failed: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    failed += 1
+                    print(f"❌ Fusion error: {str(e)}")
+        
+        print(f"✅ Fusions: {successful}/{len(tasks)} completed, {failed} failed")
     
-    def process_audio_transcription(self):
-        """Stage 5->6: Transcribe audio for keyframes"""
-        print("🎵 Processing audio transcription...")
+    def process_single_fusion(self, task: ProcessingTask) -> Dict:
+        """Process a single embedding fusion task"""
+        try:
+            record_id = task.record_id
+            field_data = task.record_data
+            keyframe_id = field_data.get("KeyframeID")
+            
+            # Get raw embedding strings
+            text_embedding_str = field_data.get("Keyframe_Text_Embedding", "")
+            image_embedding_str = field_data.get("Keyframe_Image_Embedding", "")
+            
+            # Validate embeddings exist
+            if not text_embedding_str or not image_embedding_str:
+                print(f"⚠️ Missing embeddings for keyframe {keyframe_id}")
+                return {'success': False, 'error': f'Missing embeddings for {keyframe_id}'}
+            
+            # Try to parse embeddings
+            try:
+                text_embedding = json.loads(text_embedding_str)
+                image_embedding = json.loads(image_embedding_str)
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Invalid embedding format for keyframe {keyframe_id}: {str(e)}")
+                return {'success': False, 'error': f'Invalid embedding format: {str(e)}'}
+            
+            if not text_embedding or not image_embedding:
+                return {'success': False, 'error': f'Empty embeddings for {keyframe_id}'}
+            
+            text_array = np.array(text_embedding, dtype=np.float32)
+            image_array = np.array(image_embedding, dtype=np.float32)
+            
+            if text_array.shape != image_array.shape:
+                return {'success': False, 'error': f'Shape mismatch for {keyframe_id}'}
+            
+            # Fuse embeddings (simple average)
+            fused_array = 0.5 * text_array + 0.5 * image_array
+            fused_array /= np.linalg.norm(fused_array)
+            fused_json = json.dumps(fused_array.tolist())
+            
+            # Update record
+            success = self.session.update_record(
+                CONFIG['layout_keyframes'], record_id,
+                {
+                    "Keyframe_Fused_Embedding": fused_json,
+                    "Keyframe_Status": STATUSES['EMBEDDINGS_FUSED']
+                }
+            )
+            
+            if success:
+                print(f"✅ Fusion completed for keyframe {keyframe_id}")
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Failed to update record'}
+                
+        except Exception as e:
+            print(f"❌ Unexpected error in fusion for keyframe {keyframe_id}: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    
+    def process_audio_transcription_parallel(self):
+        """Stage 5->6: Transcribe audio for keyframes in parallel"""
         records = self.session.find_records(
             CONFIG['layout_keyframes'], 
             {"Keyframe_Status": STATUSES['EMBEDDINGS_FUSED']}
         )
         
+        if not records:
+            return
+        
+        # Create tasks
+        tasks = []
         for record in records:
+            field_data = record["fieldData"]
+            keyframe_id = field_data.get("KeyframeID")
+            timecode = field_data.get("Timecode_IN")
+            video_path = field_data.get("Footage::SPECS_Filepath_Server")
+            
+            if all([keyframe_id, timecode, video_path]):
+                tasks.append(ProcessingTask(
+                    record_id=record["recordId"],
+                    record_data={
+                        'keyframe_id': keyframe_id,
+                        'timecode': timecode,
+                        'video_path': video_path
+                    },
+                    task_type='audio'
+                ))
+        
+        if not tasks:
+            return
+        
+        # Process audio in parallel
+        print(f"🎵 Processing {len(tasks)} new audio transcriptions...")
+        successful = 0
+        failed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG['max_workers_audio']) as executor:
+            futures = [executor.submit(self.process_single_audio, task) for task in tasks]
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result['success']:
+                        successful += 1
+                    else:
+                        failed += 1
+                        print(f"❌ Audio failed: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    failed += 1
+                    print(f"❌ Audio error: {str(e)}")
+        
+        print(f"✅ Audio: {successful}/{len(tasks)} completed, {failed} failed")
+    
+    def process_single_audio(self, task: ProcessingTask) -> Dict:
+        """Process a single audio transcription task"""
+        audio_path = None
+        try:
+            record_id = task.record_id
+            keyframe_id = task.record_data['keyframe_id']
+            timecode = task.record_data['timecode']
+            video_path = task.record_data['video_path']
+            
+            # Check if video file exists and is accessible
+            if not os.path.exists(video_path):
+                print(f"⚠️ Video file not found for keyframe {keyframe_id}: {video_path}")
+                return {'success': False, 'error': 'Video file not found'}
+            
             try:
-                record_id = record["recordId"]
-                field_data = record["fieldData"]
-                keyframe_id = field_data.get("KeyframeID")
-                timecode = field_data.get("Timecode_IN")
-                video_path = field_data.get("Footage::SPECS_Filepath_Server")
-                
-                if not all([keyframe_id, timecode, video_path]):
-                    print(f"⚠️ Missing audio data for {keyframe_id}")
-                    continue
-                
-                # Extract audio segment
-                audio_path = os.path.join(CONFIG['tmp_dir'], f"{keyframe_id}_audio.wav")
-                ffmpeg_cmd = [
-                    CONFIG['ffmpeg_path'], "-y", "-ss", timecode, "-i", video_path,
-                    "-t", "5", "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-                
-                # Check for silence
-                silent = self.check_audio_silence(audio_path)
-                transcript = ""
-                
-                if not silent:
-                    # Transcribe with Whisper
-                    result = whisper_model.transcribe(audio_path, language="en")
-                    transcript = result.get("text", "").strip()
-                    print(f"📝 Transcript for {keyframe_id}: {transcript}")
-                else:
-                    print(f"🔇 Silent audio detected for {keyframe_id}")
-                
-                # Update record
+                with open(video_path, 'rb') as f:
+                    f.read(1)  # Try to read one byte to verify access
+            except (OSError, IOError) as e:
+                print(f"⚠️ Cannot access video file for keyframe {keyframe_id}: {str(e)}")
+                return {'success': False, 'error': f'Cannot access video file: {str(e)}'}
+            
+            # First check if video has audio streams
+            probe_cmd = [
+                CONFIG['ffmpeg_path'],
+                "-i", video_path,
+                "-loglevel", "error"
+            ]
+            
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            has_audio = "Audio:" in probe_result.stderr
+            
+            if not has_audio:
+                print(f"ℹ️ No audio stream found in video for keyframe {keyframe_id}")
+                # Update record to mark as processed since there's no audio to process
                 success = self.session.update_record(
                     CONFIG['layout_keyframes'], record_id,
                     {
-                        "Keyframe_Transcript": transcript,
+                        "Keyframe_Transcript": "",
                         "Keyframe_Status": STATUSES['AUDIO_TRANSCRIBED']
                     }
                 )
+                return {'success': True, 'transcript': ""}
+            
+            # Extract audio segment
+            audio_path = os.path.join(CONFIG['tmp_dir'], f"{keyframe_id}_audio.wav")
+            
+            # Add error output to ffmpeg for debugging
+            ffmpeg_cmd = [
+                CONFIG['ffmpeg_path'], "-y", 
+                "-ss", timecode, 
+                "-i", video_path,
+                "-t", "5", 
+                "-vn", 
+                "-acodec", "pcm_s16le", 
+                "-ar", "16000", 
+                "-ac", "1", 
+                audio_path
+            ]
+            
+            try:
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"⚠️ FFmpeg error for keyframe {keyframe_id}:")
+                print(f"Command: {' '.join(ffmpeg_cmd)}")
+                print(f"Error output: {e.stderr}")
+                return {'success': False, 'error': f'FFmpeg error: {e.stderr}'}
+            
+            # Check if audio was extracted
+            if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                print(f"⚠️ No audio extracted for keyframe {keyframe_id}")
+                return {'success': False, 'error': 'No audio extracted'}
+            
+            # Check for silence
+            silent = self.check_audio_silence(audio_path)
+            transcript = ""
+            
+            if not silent:
+                # Transcribe with Whisper (thread-safe)
+                with self._whisper_lock:
+                    result = self.whisper_model.transcribe(audio_path, language="en")
+                    transcript = result.get("text", "").strip()
+            
+            # Update record
+            success = self.session.update_record(
+                CONFIG['layout_keyframes'], record_id,
+                {
+                    "Keyframe_Transcript": transcript,
+                    "Keyframe_Status": STATUSES['AUDIO_TRANSCRIBED']
+                }
+            )
+            
+            # Cleanup
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+            
+            if success:
+                print(f"✅ Audio transcribed for keyframe {keyframe_id}")
+                return {'success': True, 'transcript': transcript}
+            else:
+                return {'success': False, 'error': 'Failed to update record'}
                 
-                if success:
-                    print(f"✅ Audio transcribed for {keyframe_id}")
-                
-                # Cleanup
-                if os.path.exists(audio_path):
-                    os.remove(audio_path)
-                    
-            except Exception as e:
-                print(f"❌ Audio transcription error for {record_id}: {e}")
+        except Exception as e:
+            print(f"❌ Unexpected error in audio processing for keyframe {task.record_data['keyframe_id']}: {str(e)}")
+            # Cleanup on error
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+            return {'success': False, 'error': str(e)}
     
     def process_video_descriptions(self):
         """Stage 6->7: Generate video descriptions when all keyframes are transcribed"""
-        print("📄 Processing video descriptions...")
-        
         try:
-            # Find all footage with transcribed keyframes
-            print("🔍 Step 1: Finding transcribed keyframes...")
+            # Get all unique FootageIDs that have any keyframes in AUDIO_TRANSCRIBED state
             transcribed_records = self.session.find_records(
                 CONFIG['layout_keyframes'], 
                 {"Keyframe_Status": STATUSES['AUDIO_TRANSCRIBED']}
             )
-            print(f"📊 Found {len(transcribed_records)} transcribed keyframes")
             
-            # Group by FootageID
-            print("🔍 Step 2: Grouping by FootageID...")
-            footage_map = {}
+            if not transcribed_records:
+                return
+            
+            # Group by FootageID to check completion status
+            footage_status = {}  # FootageID -> {total: X, transcribed: Y}
             for record in transcribed_records:
-                field_data = record["fieldData"]
-                footage_id = field_data.get("FootageID")
+                footage_id = record["fieldData"].get("FootageID")
                 if footage_id:
-                    footage_map.setdefault(footage_id, []).append(field_data)
+                    if footage_id not in footage_status:
+                        # Get total keyframes for this footage
+                        all_keyframes = self.session.find_records(
+                            CONFIG['layout_keyframes'],
+                            {"FootageID": footage_id}
+                        )
+                        footage_status[footage_id] = {
+                            'total': len(all_keyframes),
+                            'transcribed': 0,
+                            'keyframes': all_keyframes
+                        }
+                    footage_status[footage_id]['transcribed'] += 1
             
-            print(f"📊 Found footage IDs: {list(footage_map.keys())}")
+            if not footage_status:
+                return
             
-            for footage_id, keyframes in footage_map.items():
-                print(f"\n🎯 Processing footage: {footage_id}")
-                try:
-                    # Check if ALL keyframes for this footage are transcribed
-                    print(f"🔍 Step 3: Checking if all keyframes are transcribed for {footage_id}...")
-                    all_keyframes = self.session.find_records(
-                        CONFIG['layout_keyframes'], 
-                        {"FootageID": footage_id}
+            # Find footages ready for description generation
+            ready_footages = []
+            for footage_id, status in footage_status.items():
+                if status['total'] == status['transcribed']:
+                    # Double check none are already processed
+                    already_processed = any(
+                        kf["fieldData"].get("Keyframe_Status") == STATUSES['VIDEO_DESCRIPTION_GENERATED']
+                        for kf in status['keyframes']
                     )
-                    
-                    total_count = len(all_keyframes)
-                    transcribed_count = len(keyframes)
-                    print(f"📊 Keyframes for {footage_id}: {transcribed_count}/{total_count} transcribed")
-                    
-                    if transcribed_count != total_count:
-                        print(f"⏩ Skipping {footage_id}, not all keyframes transcribed yet ({transcribed_count}/{total_count})")
-                        continue
-                    
+                    if not already_processed:
+                        ready_footages.append((footage_id, status['keyframes']))
+            
+            if not ready_footages:
+                return
+            
+            print(f"🎥 Found {len(ready_footages)} footages ready for description generation")
+            
+            # Process each ready footage
+            for footage_id, all_keyframes in ready_footages:
+                try:
                     # Get footage record
-                    print(f"🔍 Step 4: Getting footage record for {footage_id}...")
                     footage_records = self.session.find_records(
-                        CONFIG['layout_footage'], 
+                        CONFIG['layout_footage'],
                         {"INFO_FTG_ID": footage_id}
                     )
                     
                     if not footage_records:
-                        print(f"⚠️ No footage record found for {footage_id}")
                         continue
                     
                     footage_record = footage_records[0]
@@ -523,25 +913,20 @@ Generate keyframe description:"""
                     filename = footage_field_data.get("Filename", "")
                     existing_description = footage_field_data.get("INFO_Description", "")
                     
-                    print(f"📁 Footage details for {footage_id}:")
-                    print(f"   Filename: {filename}")
-                    print(f"   Existing description: {existing_description[:50]}...")
+                    print(f"📝 Generating description for {footage_id} ({len(all_keyframes)} keyframes)")
                     
                     # Generate description
-                    print(f"🔍 Step 5: Generating description for {footage_id}...")
                     title, description, csv_data = self.generate_video_description(
-                        keyframes, filename, existing_description
+                        [kf["fieldData"] for kf in all_keyframes],
+                        filename,
+                        existing_description
                     )
                     
-                    print(f"✅ Description generated for {footage_id}")
-                    print(f"   Title: {title}")
-                    print(f"   Description length: {len(description)} chars")
-                    
                     if title and description:
-                        print(f"🔍 Step 6: Updating footage record for {footage_id}...")
-                        # Update footage record with separate title and description
+                        # Update footage record
                         success = self.session.update_record(
-                            CONFIG['layout_footage'], footage_record_id,
+                            CONFIG['layout_footage'],
+                            footage_record_id,
                             {
                                 "INFO_Title": title,
                                 "INFO_Description": description,
@@ -550,76 +935,54 @@ Generate keyframe description:"""
                         )
                         
                         if success:
-                            print(f"✅ Video title and description updated for {footage_id}")
-                            print(f"   Title: {title}")
-                            print(f"   Description: {description[:100]}...")
+                            print(f"✅ Description generated for {footage_id}: '{title}'")
                             
-                            print(f"🔍 Step 7: Updating keyframe statuses for {footage_id}...")
-                            # Update all keyframes to final status
-                            updated_count = 0
-                            for keyframe_record in all_keyframes:
-                                update_success = self.session.update_record(
-                                    CONFIG['layout_keyframes'], keyframe_record["recordId"],
-                                    {"Keyframe_Status": STATUSES['FULLY_PROCESSED']}
-                                )
-                                if update_success:
-                                    updated_count += 1
+                            # Update ALL keyframes to VIDEO_DESCRIPTION_GENERATED
+                            updated = 0
+                            for keyframe in all_keyframes:
+                                if self.session.update_record(
+                                    CONFIG['layout_keyframes'],
+                                    keyframe["recordId"],
+                                    {"Keyframe_Status": STATUSES['VIDEO_DESCRIPTION_GENERATED']}
+                                ):
+                                    updated += 1
                             
-                            print(f"✅ Marked {updated_count}/{len(all_keyframes)} keyframes for {footage_id} as fully processed")
-                        else:
-                            print(f"❌ Failed to update footage record for {footage_id}")
-                    else:
-                        print(f"⚠️ No title/description generated for {footage_id}")
+                            print(f"✅ Updated status for {updated}/{len(all_keyframes)} keyframes")
                 
-                except Exception as footage_error:
-                    print(f"❌ Error processing footage {footage_id}: {footage_error}")
-                    import traceback
-                    print(f"   Full traceback: {traceback.format_exc()}")
+                except Exception as e:
+                    print(f"❌ Error processing {footage_id}: {e}")
                     
         except Exception as e:
             print(f"❌ Video description processing error: {e}")
-            import traceback
-            print(f"   Full traceback: {traceback.format_exc()}")
     
     def generate_video_description(self, keyframes: List[Dict], filename: str, existing_description: str) -> Tuple[str, str, str]:
-        """Generate comprehensive video description from keyframes - NO CHUNKING VERSION"""
-        print("🔍 GENERATE_VIDEO_DESCRIPTION: Starting...")
+        """Generate comprehensive video description from keyframes"""
         try:
             # Sort keyframes
-            print("🔍 GENERATE_VIDEO_DESCRIPTION: Sorting keyframes...")
             keyframes_sorted = sorted(keyframes, key=lambda x: x.get("KeyframeID", ""))
-            print(f"📊 Sorted {len(keyframes_sorted)} keyframes")
             
             # Analyze content
-            print("🔍 GENERATE_VIDEO_DESCRIPTION: Analyzing content...")
             total_keyframes = len(keyframes_sorted)
             keyframes_with_audio = sum(1 for kf in keyframes_sorted if kf.get("Keyframe_Transcript", "").strip())
             keyframes_with_visuals = sum(1 for kf in keyframes_sorted if kf.get("Keyframe_GPT_Caption", "").strip())
             
-            print(f"📊 Content analysis: {keyframes_with_visuals}/{total_keyframes} visual, {keyframes_with_audio}/{total_keyframes} audio")
-            
             if keyframes_with_visuals == 0:
-                print("⚠️ No visual content found - skipping description generation")
                 return "No Visual Content", "This video appears to lack visual content data.", ""
             
             # Build CSV data
-            print("🔍 GENERATE_VIDEO_DESCRIPTION: Building CSV data...")
             full_csv_lines = ["Frame,Visual Description,Audio Transcript"]
-            for i, kf in enumerate(keyframes_sorted):
+            for kf in keyframes_sorted:
                 desc = kf.get("Keyframe_GPT_Caption", "").replace("\n", " ").strip()
                 trans = kf.get("Keyframe_Transcript", "").replace("\n", " ").strip()
                 frame_id = kf.get("KeyframeID", "")
                 full_csv_lines.append(f"{frame_id},{desc},{trans}")
-                print(f"   Keyframe {i+1}: {frame_id} - Visual: {len(desc)} chars, Audio: {len(trans)} chars")
             
             csv_data = "\n".join(full_csv_lines)
-            print(f"📊 CSV data built: {len(csv_data)} total characters")
             
             # Check if it's a silent video
             is_silent = keyframes_with_audio == 0
             
             # Prepare the OpenAI request
-            print("🔍 GENERATE_VIDEO_DESCRIPTION: Preparing OpenAI request...")
             system_prompt = (
                 "You are generating catalog metadata for a video file. "
                 "The input provides frame-level visual descriptions and audio transcripts. "
@@ -635,7 +998,6 @@ Generate keyframe description:"""
             
             # Prepare context note
             silent_note = "[SILENT VIDEO - NO AUDIO]" if is_silent else ""
-            print(f"📊 Silent video status: {silent_note}")
             
             user_prompt = f"""Filename: {filename}
 Existing description: {existing_description}
@@ -643,9 +1005,6 @@ Existing description: {existing_description}
 
 Frame-level data:
 {csv_data}"""
-            
-            print(f"📊 User prompt length: {len(user_prompt)} characters")
-            print("📝 Calling OpenAI API...")
             
             response = openai.chat.completions.create(
                 model="gpt-4o",
@@ -656,24 +1015,15 @@ Frame-level data:
                 temperature=0.3
             )
             
-            print("✅ OpenAI response received")
             final_response = response.choices[0].message.content.strip()
-            print(f"📝 Raw response: {final_response[:200]}...")
             
             # Parse title and description
-            print("🔍 GENERATE_VIDEO_DESCRIPTION: Parsing title and description...")
             title, description = self.parse_title_description(final_response)
-            
-            print(f"✅ GENERATE_VIDEO_DESCRIPTION: Complete!")
-            print(f"   Title: {title}")
-            print(f"   Description: {description[:100]}...")
             
             return title, description, csv_data
             
         except Exception as e:
-            print(f"❌ GENERATE_VIDEO_DESCRIPTION: Exception occurred: {e}")
-            import traceback
-            print(f"   Full traceback: {traceback.format_exc()}")
+            print(f"❌ Description generation error: {e}")
             return "", "", ""
     
     def parse_title_description(self, response_text: str) -> Tuple[str, str]:
@@ -687,28 +1037,25 @@ Frame-level data:
             for line in lines:
                 line = line.strip()
                 if line.lower().startswith('title:'):
-                    title = line[6:].strip()  # Remove "Title:" prefix
+                    title = line[6:].strip()
                 elif line.lower().startswith('description:'):
-                    description = line[12:].strip()  # Remove "Description:" prefix
+                    description = line[12:].strip()
                 elif not title and not line.lower().startswith('description:'):
-                    # If no "Title:" prefix found, assume first line is title
                     title = line
                 elif title and not description:
-                    # If we have title but no "Description:" prefix, assume this is description
                     description = line
             
-            # Fallback: if parsing fails, try to split on first line break
+            # Fallback parsing
             if not title and not description:
                 parts = response_text.strip().split('\n', 1)
                 if len(parts) >= 2:
                     title = parts[0].strip()
                     description = parts[1].strip()
                 else:
-                    # Last resort: use entire response as description
                     description = response_text.strip()
                     title = "Untitled Video"
             
-            # Clean up any remaining prefixes that might have been missed
+            # Clean up prefixes
             title = title.replace('Title:', '').replace('title:', '').strip()
             description = description.replace('Description:', '').replace('description:', '').strip()
             
@@ -718,13 +1065,9 @@ Frame-level data:
             if not description:
                 description = "No description available"
                 
-        except Exception as e:
-            print(f"⚠️ Title/description parsing error: {e}")
+        except Exception:
             title = "Untitled Video"
             description = response_text.strip() if response_text.strip() else "No description available"
-        
-        print(f"📝 Parsed - Title: '{title}'")
-        print(f"📝 Parsed - Description: '{description}'")
         
         return title, description
     
@@ -732,8 +1075,9 @@ Frame-level data:
         """Check if audio file is mostly silent"""
         try:
             result = subprocess.run(
-                [CONFIG['ffmpeg_path'], "-i", audio_path, "-af", "volumedetect", "-f", "null", "-"],
-                stderr=subprocess.PIPE, text=True
+                [CONFIG['ffmpeg_path'], "-i", audio_path, "-af", "volumedetect", 
+                 "-f", "null", "-", "-loglevel", "quiet"],
+                stderr=subprocess.PIPE, text=True, capture_output=True
             )
             
             vol_output = result.stderr
@@ -743,8 +1087,8 @@ Frame-level data:
                 mean_volume_db = float(mean_volume_line.split("mean_volume:")[1].split(" dB")[0].strip())
                 return mean_volume_db < -50  # Consider silence if below -50dB
             
-        except Exception as e:
-            print(f"❌ Audio silence check failed: {e}")
+        except Exception:
+            pass  # Silently handle errors
         
         return False
     
@@ -754,22 +1098,22 @@ Frame-level data:
 
 def main():
     """Main processing loop"""
-    processor = KeyframeProcessor()
+    processor = MultiThreadedKeyframeProcessor()
     
-    print("🚀 Starting Keyframe Processor")
-    print(f"📊 Status sequence: {' → '.join(STATUSES.values())}")
+    print("🚀 Starting Multithreaded Keyframe Processor")
+    print(f"🧵 Thread config: {CONFIG['max_workers_thumbnails']} thumb | {CONFIG['max_workers_captions']} caption | {CONFIG['max_workers_audio']} audio")
     
     while True:
-        print(f"\n🔄 Starting processing cycle at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n🔄 Processing cycle: {time.strftime('%H:%M:%S')}")
         
         try:
             processor.process_all_stages()
-            print("✅ Processing cycle completed")
+            print("✅ Cycle completed")
             
         except Exception as e:
-            print(f"❌ Processing cycle error: {e}")
+            print(f"❌ Cycle error: {e}")
         
-        print(f"⏳ Sleeping for {CONFIG['loop_interval']} seconds...")
+        print(f"⏳ Sleeping {CONFIG['loop_interval']}s...")
         time.sleep(CONFIG['loop_interval'])
 
 if __name__ == "__main__":
