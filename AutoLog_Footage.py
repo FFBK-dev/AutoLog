@@ -410,6 +410,12 @@ class MultiThreadedKeyframeProcessor:
         if not records:
             return
         
+        # Add debug logging
+        if records:
+            print("\n🔍 DEBUG: First keyframe record data:")
+            print(json.dumps(records[0], indent=2))
+            print("\n")
+        
         # Create tasks for parallel processing
         tasks = []
         for record in records:

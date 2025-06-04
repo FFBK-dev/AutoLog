@@ -53,6 +53,24 @@ class FinalMarker:
     timecode: str  # HH:MM:SS:FF format
     description: str  # Prompt-aware description
     
+    def get_frame_number(self) -> int:
+        """Convert timecode to frame number for sorting"""
+        # Parse HH:MM:SS:FF or HH:MM:SS;FF format
+        parts = self.timecode.replace(';', ':').split(':')
+        if len(parts) != 4:
+            return 0
+        
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+            frames = int(parts[3])
+            
+            # Convert to total frames (assuming 30fps - this is just for sorting)
+            return frames + (seconds * 30) + (minutes * 30 * 60) + (hours * 30 * 60 * 60)
+        except ValueError:
+            return 0
+
 class FileMakerSession:
     """FileMaker session handler (from your existing script)"""
     
@@ -1237,6 +1255,10 @@ class SmartMarkerGenerator:
         
         return merged
     
+    def sort_markers(self, markers: List[FinalMarker]) -> List[FinalMarker]:
+        """Sort markers by timecode"""
+        return sorted(markers, key=lambda m: m.get_frame_number())
+
     def generate_intelligent_markers(self, candidates: List[MarkerCandidate], user_prompt: str, 
                                    prompt_intelligence: Dict, video_path: str, footage_data: Dict = None) -> List[FinalMarker]:
         """
@@ -1260,7 +1282,11 @@ class SmartMarkerGenerator:
                 description=enhanced_description
             ))
         
-        return final_markers
+        # Sort markers by timecode before returning
+        sorted_markers = self.sort_markers(final_markers)
+        print(f"✅ Generated {len(sorted_markers)} markers")
+        
+        return sorted_markers
     
     def enhance_marker_description(self, candidate: MarkerCandidate, user_prompt: str, 
                                  prompt_intelligence: Dict, video_path: str) -> str:
@@ -1376,8 +1402,11 @@ Date: {self.get_current_date()}
             
             # Update FileMaker with correct field names
             update_data = {
-                "MARKERS_List": markers_text,
-                "MARKERS_File": avid_content
+                "fieldData": {  # Add fieldData wrapper
+                    "MARKERS_List": markers_text,
+                    "MARKERS_File": avid_content,
+                    "MARKERS_Requested": ""  # Reset request flag here
+                }
             }
             
             print(f"🔄 Updating FileMaker fields:")
@@ -1387,7 +1416,7 @@ Date: {self.get_current_date()}
             success = self.session.update_record(
                 CONFIG['layout_footage'],
                 record_id,
-                update_data
+                update_data["fieldData"]  # Pass only the fieldData part
             )
             
             if success:
@@ -1589,18 +1618,20 @@ def process_marker_requests(session: FileMakerSession):
                 
                 # Update record and reset request flag
                 update_data = {
-                    "MARKERS_Requested": "",  # Reset request flag
-                    "MARKERS_List": f"Generated {len(markers)} markers:\n\n" + "\n".join(
-                        f"{i:2d}. {m.timecode} - {m.description}"
-                        for i, m in enumerate(markers, 1)
-                    ),
-                    "MARKERS_File": avid_content
+                    "fieldData": {  # Add fieldData wrapper
+                        "MARKERS_List": f"Generated {len(markers)} markers:\n\n" + "\n".join(
+                            f"{i:2d}. {m.timecode} - {m.description}"
+                            for i, m in enumerate(markers, 1)
+                        ),
+                        "MARKERS_File": avid_content,
+                        "MARKERS_Requested": ""  # Reset request flag here
+                    }
                 }
                 
                 success = session.update_record(
                     CONFIG['layout_footage'],
                     record["recordId"],
-                    update_data
+                    update_data["fieldData"]  # Pass only the fieldData part
                 )
                 
                 if success:
