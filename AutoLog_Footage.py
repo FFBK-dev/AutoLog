@@ -241,85 +241,13 @@ class MultiThreadedKeyframeProcessor:
                 print(f"⚠️  Found {status_counts[status]} records potentially stuck in {status}")
                 print(f"   First few records: {', '.join(status_details[status][:3])}")
     
-    def synchronize_keyframe_statuses(self):
-        """Ensure all keyframes for each footage are at the same processing stage"""
-        try:
-            # Get all keyframes grouped by FootageID
-            all_keyframes = self.session.find_records(
-                CONFIG['layout_keyframes'],
-                {"KeyframeID": "*"}
-            )
-            
-            # Group by FootageID
-            footage_groups = {}
-            for record in all_keyframes:
-                footage_id = record["fieldData"].get("FootageID")
-                if footage_id:
-                    if footage_id not in footage_groups:
-                        footage_groups[footage_id] = []
-                    footage_groups[footage_id].append(record)
-            
-            # Status order for synchronization
-            status_order = [
-                STATUSES['PENDING'],
-                STATUSES['THUMBNAIL_CREATED'],
-                STATUSES['CAPTION_GENERATED'],
-                STATUSES['EMBEDDINGS_READY'],
-                STATUSES['EMBEDDINGS_FUSED'],
-                STATUSES['AUDIO_TRANSCRIBED'],
-                STATUSES['VIDEO_DESCRIPTION_GENERATED'],
-                STATUSES['FULLY_PROCESSED']
-            ]
-            
-            synced_count = 0
-            for footage_id, keyframes in footage_groups.items():
-                # Find the least advanced status
-                min_status_idx = len(status_order) - 1
-                current_statuses = set()
-                
-                for kf in keyframes:
-                    status = kf["fieldData"].get("Keyframe_Status")
-                    if status:
-                        current_statuses.add(status)
-                        try:
-                            status_idx = status_order.index(status)
-                            min_status_idx = min(min_status_idx, status_idx)
-                        except ValueError:
-                            continue
-                
-                # If we have multiple different statuses, synchronize to the least advanced
-                if len(current_statuses) > 1:
-                    target_status = status_order[min_status_idx]
-                    print(f"🔄 Synchronizing {footage_id} keyframes to {target_status}")
-                    print(f"   Current statuses: {', '.join(current_statuses)}")
-                    
-                    # Update all keyframes to the least advanced status
-                    for kf in keyframes:
-                        current_status = kf["fieldData"].get("Keyframe_Status")
-                        if current_status and current_status != target_status:
-                            if self.session.update_record(
-                                CONFIG['layout_keyframes'],
-                                kf["recordId"],
-                                {"Keyframe_Status": target_status}
-                            ):
-                                synced_count += 1
-            
-            if synced_count > 0:
-                print(f"✅ Synchronized {synced_count} keyframes to match their footage groups")
-                
-        except Exception as e:
-            print(f"❌ Error during status synchronization: {e}")
-
     def process_all_stages(self):
-        """Process all keyframe stages in sequence with parallel processing"""
+        """Process all keyframe stages in sequence based purely on status fields"""
         with FileMakerSession() as session:
             self.session = session
             
-            # Quick status overview
+            # Quick status overview for monitoring
             self.debug_records()
-            
-            # Synchronize statuses before processing
-            self.synchronize_keyframe_statuses()
             
             # Process each stage in order with threading
             self.process_thumbnails_parallel()
@@ -328,7 +256,150 @@ class MultiThreadedKeyframeProcessor:
             self.process_embedding_fusion_parallel()
             self.process_audio_transcription_parallel()
             self.process_video_descriptions()  # Keep serial for complex logic
-    
+
+    def check_footage_readiness_for_description(self, footage_id: str) -> bool:
+        """Check if ALL keyframes for a footage are ready for description generation"""
+        try:
+            # Get ALL keyframes for this footage
+            all_keyframes = self.session.find_records(
+                CONFIG['layout_keyframes'],
+                {"FootageID": footage_id}
+            )
+            
+            if not all_keyframes:
+                return False
+            
+            # Check if ALL keyframes are at AUDIO_TRANSCRIBED status
+            for keyframe in all_keyframes:
+                status = keyframe["fieldData"].get("Keyframe_Status")
+                if status != STATUSES['AUDIO_TRANSCRIBED']:
+                    return False
+            
+            return True
+        except Exception as e:
+            print(f"❌ Error checking footage readiness: {e}")
+            return False
+
+    def process_video_descriptions(self):
+        """Stage 6->7: Generate video descriptions when ALL keyframes are transcribed"""
+        try:
+            # Get keyframes ready for description processing
+            transcribed_records = self.session.find_records(
+                CONFIG['layout_keyframes'], 
+                {"Keyframe_Status": STATUSES['AUDIO_TRANSCRIBED']}
+            )
+            
+            if not transcribed_records:
+                return
+            
+            # Group by FootageID
+            footage_groups = {}
+            for record in transcribed_records:
+                footage_id = record["fieldData"].get("FootageID")
+                if footage_id:
+                    if footage_id not in footage_groups:
+                        footage_groups[footage_id] = []
+                    footage_groups[footage_id].append(record)
+            
+            # Only process footages where ALL keyframes are ready
+            ready_footages = []
+            for footage_id, keyframes in footage_groups.items():
+                if self.check_footage_readiness_for_description(footage_id):
+                    ready_footages.append((footage_id, keyframes))
+            
+            if not ready_footages:
+                print("ℹ️ No footages have all keyframes ready for description generation")
+                return
+            
+            print(f"🎥 Found {len(ready_footages)} footages ready for description generation")
+            
+            # Process each ready footage
+            for footage_id, keyframes in ready_footages:
+                try:
+                    # Get footage record
+                    footage_records = self.session.find_records(
+                        CONFIG['layout_footage'],
+                        {"INFO_FTG_ID": footage_id}
+                    )
+                    
+                    if not footage_records:
+                        continue
+                    
+                    footage_record = footage_records[0]
+                    footage_record_id = footage_record["recordId"]
+                    footage_field_data = footage_record["fieldData"]
+                    filename = footage_field_data.get("Filename", "")
+                    existing_description = footage_field_data.get("INFO_Description", "")
+                    
+                    print(f"📝 Generating description for {footage_id} ({len(keyframes)} keyframes)")
+                    
+                    # Generate description
+                    title, description, csv_data = self.generate_video_description(
+                        [kf["fieldData"] for kf in keyframes],
+                        filename,
+                        existing_description
+                    )
+                    
+                    if title and description:
+                        # Update footage record
+                        success = self.session.update_record(
+                            CONFIG['layout_footage'],
+                            footage_record_id,
+                            {
+                                "INFO_Title": title,
+                                "INFO_Description": description,
+                                "INFO_Video_Events": csv_data
+                            }
+                        )
+                        
+                        if success:
+                            print(f"✅ Description generated for {footage_id}: '{title}'")
+                            
+                            # Update ALL keyframes to VIDEO_DESCRIPTION_GENERATED
+                            updated = 0
+                            for keyframe in keyframes:
+                                if self.session.update_record(
+                                    CONFIG['layout_keyframes'],
+                                    keyframe["recordId"],
+                                    {"Keyframe_Status": STATUSES['VIDEO_DESCRIPTION_GENERATED']}
+                                ):
+                                    updated += 1
+                            
+                            print(f"✅ Updated status for {updated}/{len(keyframes)} keyframes")
+                
+                except Exception as e:
+                    print(f"❌ Error processing {footage_id}: {e}")
+                
+        except Exception as e:
+            print(f"❌ Video description processing error: {e}")
+
+    def manual_sync_footage_keyframes(self, footage_id: str, target_status: str):
+        """
+        Manual synchronization function that users can trigger from FileMaker
+        This could be called via a script parameter if needed
+        """
+        try:
+            keyframes = self.session.find_records(
+                CONFIG['layout_keyframes'],
+                {"FootageID": footage_id}
+            )
+            
+            updated = 0
+            for keyframe in keyframes:
+                if self.session.update_record(
+                    CONFIG['layout_keyframes'],
+                    keyframe["recordId"],
+                    {"Keyframe_Status": target_status}
+                ):
+                    updated += 1
+            
+            print(f"✅ Manually synchronized {updated} keyframes for {footage_id} to {target_status}")
+            return updated
+            
+        except Exception as e:
+            print(f"❌ Manual sync error: {e}")
+            return 0
+
     def process_thumbnails_parallel(self):
         """Stage 1->2: Generate thumbnails for pending keyframes in parallel"""
         records = self.session.find_records(
@@ -861,116 +932,6 @@ Generate keyframe description:"""
             if audio_path and os.path.exists(audio_path):
                 os.remove(audio_path)
             return {'success': False, 'error': str(e)}
-    
-    def process_video_descriptions(self):
-        """Stage 6->7: Generate video descriptions when all keyframes are transcribed"""
-        try:
-            # Get all unique FootageIDs that have any keyframes in AUDIO_TRANSCRIBED state
-            transcribed_records = self.session.find_records(
-                CONFIG['layout_keyframes'], 
-                {"Keyframe_Status": STATUSES['AUDIO_TRANSCRIBED']}
-            )
-            
-            if not transcribed_records:
-                return
-            
-            # Group by FootageID to check completion status
-            footage_status = {}  # FootageID -> {total: X, transcribed: Y}
-            for record in transcribed_records:
-                footage_id = record["fieldData"].get("FootageID")
-                if footage_id:
-                    if footage_id not in footage_status:
-                        # Get total keyframes for this footage
-                        all_keyframes = self.session.find_records(
-                            CONFIG['layout_keyframes'],
-                            {"FootageID": footage_id}
-                        )
-                        footage_status[footage_id] = {
-                            'total': len(all_keyframes),
-                            'transcribed': 0,
-                            'keyframes': all_keyframes
-                        }
-                    footage_status[footage_id]['transcribed'] += 1
-            
-            if not footage_status:
-                return
-            
-            # Find footages ready for description generation
-            ready_footages = []
-            for footage_id, status in footage_status.items():
-                if status['total'] == status['transcribed']:
-                    # Double check none are already processed
-                    already_processed = any(
-                        kf["fieldData"].get("Keyframe_Status") == STATUSES['VIDEO_DESCRIPTION_GENERATED']
-                        for kf in status['keyframes']
-                    )
-                    if not already_processed:
-                        ready_footages.append((footage_id, status['keyframes']))
-            
-            if not ready_footages:
-                return
-            
-            print(f"🎥 Found {len(ready_footages)} footages ready for description generation")
-            
-            # Process each ready footage
-            for footage_id, all_keyframes in ready_footages:
-                try:
-                    # Get footage record
-                    footage_records = self.session.find_records(
-                        CONFIG['layout_footage'],
-                        {"INFO_FTG_ID": footage_id}
-                    )
-                    
-                    if not footage_records:
-                        continue
-                    
-                    footage_record = footage_records[0]
-                    footage_record_id = footage_record["recordId"]
-                    footage_field_data = footage_record["fieldData"]
-                    filename = footage_field_data.get("Filename", "")
-                    existing_description = footage_field_data.get("INFO_Description", "")
-                    
-                    print(f"📝 Generating description for {footage_id} ({len(all_keyframes)} keyframes)")
-                    
-                    # Generate description
-                    title, description, csv_data = self.generate_video_description(
-                        [kf["fieldData"] for kf in all_keyframes],
-                        filename,
-                        existing_description
-                    )
-                    
-                    if title and description:
-                        # Update footage record
-                        success = self.session.update_record(
-                            CONFIG['layout_footage'],
-                            footage_record_id,
-                            {
-                                "INFO_Title": title,
-                                "INFO_Description": description,
-                                "INFO_Video_Events": csv_data
-                            }
-                        )
-                        
-                        if success:
-                            print(f"✅ Description generated for {footage_id}: '{title}'")
-                            
-                            # Update ALL keyframes to VIDEO_DESCRIPTION_GENERATED
-                            updated = 0
-                            for keyframe in all_keyframes:
-                                if self.session.update_record(
-                                    CONFIG['layout_keyframes'],
-                                    keyframe["recordId"],
-                                    {"Keyframe_Status": STATUSES['VIDEO_DESCRIPTION_GENERATED']}
-                                ):
-                                    updated += 1
-                            
-                            print(f"✅ Updated status for {updated}/{len(all_keyframes)} keyframes")
-                
-                except Exception as e:
-                    print(f"❌ Error processing {footage_id}: {e}")
-                    
-        except Exception as e:
-            print(f"❌ Video description processing error: {e}")
     
     def generate_video_description(self, keyframes: List[Dict], filename: str, existing_description: str) -> Tuple[str, str, str]:
         """Generate comprehensive video description from keyframes"""

@@ -17,6 +17,7 @@ import urllib3
 import warnings
 import base64
 import re
+import time
 
 # Suppress SSL warnings (matching your existing script)
 warnings.filterwarnings('ignore')
@@ -33,6 +34,7 @@ CONFIG = {
     'tmp_dir': '/private/tmp',
     'layout_keyframes': 'Keyframes',
     'layout_footage': 'Footage',
+    'loop_interval': 30,  # seconds between polling cycles
 }
 
 @dataclass
@@ -143,7 +145,14 @@ class SmartMarkerGenerator:
     
     def __init__(self):
         self.session = None
-        self.openai_client = openai.OpenAI(api_key=CONFIG['openai_api_key'])
+        # Initialize OpenAI client with version compatibility
+        openai.api_key = CONFIG['openai_api_key']
+        try:
+            # Try new style client initialization first
+            self.openai_client = openai.OpenAI(api_key=CONFIG['openai_api_key'])
+        except AttributeError:
+            # Fallback to old style for older versions
+            self.openai_client = openai
         self.whisper_model = whisper.load_model("base")
         
         # Video timecode properties (will be populated when analyzing video)
@@ -341,16 +350,30 @@ class SmartMarkerGenerator:
         """
         
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are an expert at understanding video analysis requests. Return ONLY valid JSON, no other text."},
-                    {"role": "user", "content": analysis_prompt}
-                ],
-                temperature=0.1
-            )
+            # Handle both old and new style OpenAI API
+            if hasattr(self.openai_client, 'chat') and hasattr(self.openai_client.chat, 'completions'):
+                # New style API
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are an expert at understanding video analysis requests. Return ONLY valid JSON, no other text."},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    temperature=0.1
+                )
+                response_text = response.choices[0].message.content.strip()
+            else:
+                # Old style API
+                response = self.openai_client.ChatCompletion.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are an expert at understanding video analysis requests. Return ONLY valid JSON, no other text."},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    temperature=0.1
+                )
+                response_text = response.choices[0].message['content'].strip()
             
-            response_text = response.choices[0].message.content.strip()
             print(f"🔍 Raw OpenAI response: {response_text[:200]}...")
             
             # Try to extract JSON if it's wrapped in markdown or other text
@@ -372,11 +395,21 @@ class SmartMarkerGenerator:
             # Generate search embedding
             search_text = f"{user_prompt} {' '.join(analysis.get('keywords', []))}"
             try:
-                embedding_response = self.openai_client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=search_text
-                )
-                analysis['search_embedding'] = embedding_response.data[0].embedding
+                # Handle both old and new style OpenAI API
+                if hasattr(self.openai_client, 'embeddings'):
+                    # New style API
+                    embedding_response = self.openai_client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=search_text
+                    )
+                    analysis['search_embedding'] = embedding_response.data[0].embedding
+                else:
+                    # Old style API
+                    embedding_response = self.openai_client.Embedding.create(
+                        model="text-embedding-3-small",
+                        input=search_text
+                    )
+                    analysis['search_embedding'] = embedding_response['data'][0]['embedding']
             except:
                 analysis['search_embedding'] = [0.0] * 1536
             
@@ -1265,16 +1298,29 @@ class SmartMarkerGenerator:
             Return just the description text, nothing else.
             """
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You write concise, natural video marker descriptions focusing on content over shot type."},
-                    {"role": "user", "content": description_prompt}
-                ],
-                temperature=0.3
-            )
-            
-            description = response.choices[0].message.content.strip()
+            # Handle both old and new style OpenAI API
+            if hasattr(self.openai_client, 'chat') and hasattr(self.openai_client.chat, 'completions'):
+                # New style API
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You write concise, natural video marker descriptions focusing on content over shot type."},
+                        {"role": "user", "content": description_prompt}
+                    ],
+                    temperature=0.3
+                )
+                description = response.choices[0].message.content.strip()
+            else:
+                # Old style API
+                response = self.openai_client.ChatCompletion.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You write concise, natural video marker descriptions focusing on content over shot type."},
+                        {"role": "user", "content": description_prompt}
+                    ],
+                    temperature=0.3
+                )
+                description = response.choices[0].message['content'].strip()
             
             # Clean up and truncate if needed
             description = description.replace('"', '').replace('\n', ' ')
@@ -1292,11 +1338,11 @@ class SmartMarkerGenerator:
         """
         Create AVID Media Composer compatible markers file
         """
-        filename = footage_data.get("INFO_Original_FileName", "Unknown")
+        footage_id = footage_data.get("INFO_FTG_ID", "Unknown")
         
-        # AVID markers format (simplified - you may need to adjust based on actual AVID requirements)
+        # Simple AVID markers format
         avid_content = f"""Avid Media Composer Markers
-Project: {filename}
+Project: {footage_id}
 Date: {self.get_current_date()}
 
 """
@@ -1509,100 +1555,98 @@ Date: {self.get_current_date()}
         else:
             return self.frames_to_non_drop_timecode(total_frames)
 
-def main():
-    """
-    Main function for testing - takes footage ID input from user
-    """
-    print("🎬 Smart Marker Generator - Testing Mode")
-    print("=" * 50)
-    
-    # Check dependencies first
+def process_marker_requests(session: FileMakerSession):
+    """Process any pending marker requests"""
     try:
-        import cv2
-        print("✅ OpenCV (cv2) imported successfully")
-    except ImportError:
-        print("❌ OpenCV not found. Install with: pip install opencv-python")
-        return
-    
-    try:
-        import scenedetect
-        print("✅ SceneDetect imported successfully")
-    except ImportError:
-        print("❌ SceneDetect not found. Install with: pip install scenedetect[opencv]")
-        return
-    
-    # Get user input
-    try:
-        footage_id = input("Enter INFO_FTG_ID: ").strip()
-        if not footage_id:
-            print("❌ No footage ID provided")
+        # Find records with MARKERS_Requested = 1
+        records = session.find_records(
+            CONFIG['layout_footage'],
+            {"MARKERS_Requested": "1"}
+        )
+        
+        if not records:
             return
         
-        user_prompt = input("Enter marker prompt (e.g., 'Find all close-ups'): ").strip()
-        if not user_prompt:
-            print("❌ No prompt provided")
-            return
+        print(f"📝 Found {len(records)} marker requests to process")
         
-        print(f"\n🚀 Starting analysis...")
-        print(f"Footage ID: {footage_id}")
-        print(f"Prompt: {user_prompt}")
-        
-        # Test OpenAI connection
-        try:
-            openai_client = openai.OpenAI(api_key=CONFIG['openai_api_key'])
-            test_response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": "Say 'test'"}],
-                max_tokens=5
-            )
-            print("✅ OpenAI connection successful")
-        except Exception as e:
-            print(f"❌ OpenAI connection failed: {e}")
-            print("Check your API key in the CONFIG section")
-            return
-        
-        # Initialize generator
         generator = SmartMarkerGenerator()
+        generator.session = session
         
-        # Connect to FileMaker
-        print("🔗 Connecting to FileMaker...")
-        with FileMakerSession() as session:
-            generator.session = session
-            print("✅ FileMaker connection successful")
-            
-            # Process the request
-            markers, avid_content = generator.process_marker_request(footage_id, user_prompt)
-            
-            # Display results
-            print(f"\n🎯 Results:")
-            print(f"Generated {len(markers)} markers")
-            
-            if markers:
-                print("\nMarkers:")
-                for i, marker in enumerate(markers, 1):
-                    print(f"{i:2d}. {marker.timecode} - {marker.description}")
+        for record in records:
+            try:
+                footage_id = record["fieldData"].get("INFO_FTG_ID")
+                prompt = record["fieldData"].get("MARKERS_Prompt", "")
                 
-                # Save AVID file for testing
-                avid_filename = f"markers_{footage_id}_{len(markers)}.txt"
-                with open(avid_filename, 'w') as f:
-                    f.write(avid_content)
+                if not footage_id or not prompt:
+                    print(f"⚠️ Missing required fields for record {record['recordId']}")
+                    continue
                 
-                print(f"\n💾 AVID file saved as: {avid_filename}")
-            else:
-                print("\n⚠️ No markers generated. This could be because:")
-                print("   - No keyframes have embeddings yet")
-                print("   - Confidence threshold too high")
-                print("   - Prompt doesn't match available content")
-                print("   - Video file issues")
-            
-            print(f"✅ Complete!")
-            
-    except KeyboardInterrupt:
-        print("\n👋 Cancelled by user")
+                print(f"🎯 Processing markers for {footage_id}")
+                print(f"📝 Prompt: '{prompt}'")
+                
+                # Generate markers
+                markers, avid_content = generator.process_marker_request(footage_id, prompt)
+                
+                # Update record and reset request flag
+                update_data = {
+                    "MARKERS_Requested": "",  # Reset request flag
+                    "MARKERS_List": f"Generated {len(markers)} markers:\n\n" + "\n".join(
+                        f"{i:2d}. {m.timecode} - {m.description}"
+                        for i, m in enumerate(markers, 1)
+                    ),
+                    "MARKERS_File": avid_content
+                }
+                
+                success = session.update_record(
+                    CONFIG['layout_footage'],
+                    record["recordId"],
+                    update_data
+                )
+                
+                if success:
+                    print(f"✅ Updated FileMaker with {len(markers)} markers for {footage_id}")
+                else:
+                    print(f"❌ Failed to update FileMaker for {footage_id}")
+                
+            except Exception as e:
+                print(f"❌ Error processing {footage_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # Try to reset request flag even on error
+                try:
+                    session.update_record(
+                        CONFIG['layout_footage'],
+                        record["recordId"],
+                        {"MARKERS_Requested": ""}
+                    )
+                except:
+                    pass
+                
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"❌ Error in process_marker_requests: {e}")
         import traceback
         traceback.print_exc()
+
+def main():
+    """Main polling loop"""
+    print("🚀 Starting Marker Generation Service")
+    print("⏰ Polling interval: 30 seconds")
+    
+    while True:
+        print(f"\n🔄 Processing cycle: {time.strftime('%H:%M:%S')}")
+        
+        try:
+            with FileMakerSession() as session:
+                process_marker_requests(session)
+                
+        except Exception as e:
+            print(f"❌ Cycle error: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"⏳ Sleeping 30s...")
+        time.sleep(30)
 
 if __name__ == "__main__":
     main()
