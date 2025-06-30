@@ -422,13 +422,13 @@ class MultiThreadedKeyframeProcessor:
             field_data = record["fieldData"]
             keyframe_id = field_data.get("KeyframeID")
             timecode = field_data.get("TC_IN_Seconds")
-            video_path = field_data.get("Footage::SPECS_Filepath_Server")
+            footage_id = field_data.get("FootageID")
             
-            if not all([keyframe_id, timecode, video_path]):
+            if not all([keyframe_id, timecode, footage_id]):
                 print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
                 if not keyframe_id: print("   - Missing KeyframeID")
                 if not timecode: print("   - Missing TC_IN_Seconds")
-                if not video_path: print("   - Missing video path")
+                if not footage_id: print("   - Missing footage ID")
                 continue
                 
             tasks.append(ProcessingTask(
@@ -436,7 +436,7 @@ class MultiThreadedKeyframeProcessor:
                 record_data={
                     'keyframe_id': keyframe_id,
                     'timecode': timecode,
-                    'video_path': video_path
+                    'footage_id': footage_id
                 },
                 task_type='thumbnail'
             ))
@@ -466,7 +466,21 @@ class MultiThreadedKeyframeProcessor:
             record_id = task.record_id
             keyframe_id = task.record_data['keyframe_id']
             timecode = task.record_data['timecode']
-            video_path = task.record_data['video_path']
+            footage_id = task.record_data['footage_id']
+            
+            # Look up footage record to get filepath
+            footage_records = self.session.find_records(
+                CONFIG['layout_footage'],
+                {"INFO_FTG_ID": footage_id}
+            )
+            
+            if not footage_records:
+                return {'success': False, 'error': f'Could not find footage record for {footage_id}'}
+                
+            video_path = footage_records[0]["fieldData"].get("SPECS_Filepath_Server")
+            
+            if not video_path:
+                return {'success': False, 'error': f'No filepath found for footage {footage_id}'}
             
             # Check if video file exists and is accessible
             if not os.path.exists(video_path):
@@ -789,13 +803,13 @@ Generate keyframe description:"""
             field_data = record["fieldData"]
             keyframe_id = field_data.get("KeyframeID")
             timecode = field_data.get("TC_IN_Seconds")
-            video_path = field_data.get("Footage::SPECS_Filepath_Server")
+            footage_id = field_data.get("FootageID")
             
-            if not all([keyframe_id, timecode, video_path]):
+            if not all([keyframe_id, timecode, footage_id]):
                 print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
                 if not keyframe_id: print("   - Missing KeyframeID")
                 if not timecode: print("   - Missing TC_IN_Seconds")
-                if not video_path: print("   - Missing video path")
+                if not footage_id: print("   - Missing footage ID")
                 continue
                 
             tasks.append(ProcessingTask(
@@ -803,7 +817,7 @@ Generate keyframe description:"""
                 record_data={
                     'keyframe_id': keyframe_id,
                     'timecode': timecode,
-                    'video_path': video_path
+                    'footage_id': footage_id
                 },
                 task_type='audio'
             ))
@@ -839,7 +853,23 @@ Generate keyframe description:"""
             record_id = task.record_id
             keyframe_id = task.record_data['keyframe_id']
             timecode = task.record_data['timecode']
-            video_path = task.record_data['video_path']
+            footage_id = task.record_data['footage_id']
+            
+            # Look up footage record to get filepath
+            footage_records = self.session.find_records(
+                CONFIG['layout_footage'],
+                {"INFO_FTG_ID": footage_id}
+            )
+            
+            if not footage_records:
+                print(f"⚠️ Could not find footage record for keyframe {keyframe_id}")
+                return {'success': False, 'error': f'Could not find footage record for {footage_id}'}
+                
+            video_path = footage_records[0]["fieldData"].get("SPECS_Filepath_Server")
+            
+            if not video_path:
+                print(f"⚠️ No filepath found for footage {footage_id}")
+                return {'success': False, 'error': f'No filepath found for footage {footage_id}'}
             
             # Check if video file exists and is accessible
             if not os.path.exists(video_path):

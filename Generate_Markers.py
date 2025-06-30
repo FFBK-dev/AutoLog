@@ -1405,7 +1405,7 @@ Date: {self.get_current_date()}
                 "fieldData": {  # Add fieldData wrapper
                     "MARKERS_List": markers_text,
                     "MARKERS_File": avid_content,
-                    "MARKERS_Requested": ""  # Reset request flag here
+                    "MARKERS_Requested": 0  # Reset request flag to 0 instead of empty string
                 }
             }
             
@@ -1590,7 +1590,7 @@ def process_marker_requests(session: FileMakerSession):
         # Find records with MARKERS_Requested = 1
         records = session.find_records(
             CONFIG['layout_footage'],
-            {"MARKERS_Requested": "1"}
+            {"MARKERS_Requested": 1}
         )
         
         if not records:
@@ -1624,7 +1624,7 @@ def process_marker_requests(session: FileMakerSession):
                             for i, m in enumerate(markers, 1)
                         ),
                         "MARKERS_File": avid_content,
-                        "MARKERS_Requested": ""  # Reset request flag here
+                        "MARKERS_Requested": 0  # Reset request flag to 0 instead of empty string
                     }
                 }
                 
@@ -1649,7 +1649,7 @@ def process_marker_requests(session: FileMakerSession):
                     session.update_record(
                         CONFIG['layout_footage'],
                         record["recordId"],
-                        {"MARKERS_Requested": ""}
+                        {"MARKERS_Requested": 0}
                     )
                 except:
                     pass
