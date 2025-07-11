@@ -2,7 +2,6 @@
 import sys, os, subprocess
 from pathlib import Path
 from PIL import Image
-import requests
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -18,25 +17,35 @@ FIELD_MAPPING = {
 }
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2: sys.exit(1)
     stills_id = sys.argv[1]
     token = config.get_token()
     
     try:
         record_id = config.find_record_id(token, "Stills", {FIELD_MAPPING["stills_id"]: f"=={stills_id}"})
-        r = requests.get(config.url(f"layouts/Stills/records/{record_id}"), headers=config.api_headers(token))
-        r.raise_for_status()
-        import_path = r.json()['response']['data'][0]['fieldData'][FIELD_MAPPING["import_path"]]
+        record_data = config.get_record(token, "Stills", record_id)
+        import_path = record_data[FIELD_MAPPING["import_path"]]
 
         img = Image.open(import_path)
         dimensions = f"{img.width}x{img.height}"
         file_size_mb = f"{os.path.getsize(import_path) / (1024*1024):.2f} Mb"
-        source = Path(import_path).parent.name
+        
+        # Extract archive name from path after "2 By Archive/"
+        path_parts = Path(import_path).parts
+        try:
+            archive_index = path_parts.index("2 By Archive")
+            if archive_index + 1 < len(path_parts):
+                source = path_parts[archive_index + 1]
+            else:
+                source = "Unknown Archive"
+        except ValueError:
+            source = "Unknown Archive"
 
         thumb_path = f"/tmp/thumb_{stills_id}.jpg"
         subprocess.run(['magick', import_path, '-resize', '588x588>', thumb_path], check=True)
-        with open(thumb_path, 'rb') as f:
-            container_url = f"layouts/Stills/records/{record_id}/containers/{FIELD_MAPPING['thumbnail']}/1"
-            requests.post(config.url(container_url), headers={"Authorization": f"Bearer {token}"}, files={'upload': f})
+        
+        # Upload thumbnail using config function
+        config.upload_to_container(token, "Stills", record_id, FIELD_MAPPING['thumbnail'], thumb_path)
         os.remove(thumb_path)
         
         field_data = {
@@ -45,9 +54,10 @@ if __name__ == "__main__":
             FIELD_MAPPING["source"]: source
         }
         
-        requests.patch(config.url(f"layouts/Stills/records/{record_id}"), headers=config.api_headers(token), json={"fieldData": field_data}).raise_for_status()
+        config.update_record(token, "Stills", record_id, field_data)
         print(f"SUCCESS [get_file_info]: {stills_id}")
         sys.exit(0)
+
     except Exception as e:
         sys.stderr.write(f"ERROR [get_file_info] on {stills_id}: {e}\n")
         sys.exit(1)

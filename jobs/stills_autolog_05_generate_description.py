@@ -1,8 +1,7 @@
 # jobs/stills_autolog_05_generate_description.py
-import sys, os, json
+import sys, os, json, base64
 from pathlib import Path
 import openai
-import requests
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -14,50 +13,81 @@ FIELD_MAPPING = {
     "user_prompt": "AI_Prompt",
     "description": "INFO_Description",
     "date": "INFO_Date",
+    "server_path": "SPECS_Filepath_Server",
     "globals_api_key": "SystemGlobals_AutoLog_OpenAI_API_Key"
 }
 
 def load_prompts():
-    # ... (same as before)
-
-def get_system_globals(fm_session):
-    # ... (same as before)
+    prompts_path = Path(__file__).resolve().parent.parent / "prompts.json"
+    with open(prompts_path, 'r') as f:
+        return json.load(f)
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2: sys.exit(1)
     stills_id = sys.argv[1]
     token = config.get_token()
     
     try:
-        fm_session = requests.Session()
-        fm_session.headers.update(config.api_headers(token))
-        
-        system_globals = get_system_globals(fm_session)
+        system_globals = config.get_system_globals(token)
         api_key = system_globals.get(FIELD_MAPPING["globals_api_key"])
         if not api_key: raise ValueError("OpenAI API Key not found in SystemGlobals.")
         openai.api_key = api_key
 
         record_id = config.find_record_id(token, "Stills", {FIELD_MAPPING["stills_id"]: f"=={stills_id}"})
-        r = fm_session.get(config.url(f"layouts/Stills/records/{record_id}"))
-        r.raise_for_status()
-        field_data_fm = r.json()['response']['data'][0]['fieldData']
+        record_data = config.get_record(token, "Stills", record_id)
         
-        metadata_from_fm = field_data_fm.get(FIELD_MAPPING["metadata"], '')
-        user_prompt = field_data_fm.get(FIELD_MAPPING["user_prompt"], '')
+        metadata_from_fm = record_data.get(FIELD_MAPPING["metadata"], '')
+        user_prompt = record_data.get(FIELD_MAPPING["user_prompt"], '')
+        server_path = record_data.get(FIELD_MAPPING["server_path"], '')
+        existing_description = record_data.get(FIELD_MAPPING["description"], '')
 
+        # Check if image file exists
+        if not server_path or not os.path.exists(server_path):
+            raise ValueError(f"Image file not found at: {server_path}")
+
+        # Read and encode the image
+        with open(server_path, "rb") as image_file:
+            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+
+        # Load and format the prompt
         prompts = load_prompts()
-        system_prompt = prompts.get("stills_description_json", "Error: Prompt not found.")
+        prompt_template = prompts["stills_ai_description"]
         
-        # ... (prompt construction logic is the same) ...
+        # Format the prompt with dynamic fields
+        prompt_text = prompt_template.format(
+            AI_Prompt=user_prompt if user_prompt else "",
+            INFO_Metadata=metadata_from_fm if metadata_from_fm else "",
+            INFO_Description=existing_description if existing_description else ""
+        )
+
+        # Create the message with image
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ]
         
-        response = openai.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": final_prompt}], response_format={"type": "json_object"})
+        response = openai.chat.completions.create(
+            model="gpt-4o", 
+            messages=messages, 
+            response_format={"type": "json_object"}
+        )
         content = json.loads(response.choices[0].message.content)
         
+        print(f"DEBUG: OpenAI response content: {content}")
+        
         update_data = {
-            FIELD_MAPPING["description"]: content.get("description", "Error: No description returned."),
-            FIELD_MAPPING["date"]: content.get("date", "")
+            FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
+            FIELD_MAPPING["date"]: content.get("date") or content.get("Date", "")
         }
         
-        fm_session.patch(config.url(f"layouts/Stills/records/{record_id}"), json={"fieldData": update_data}).raise_for_status()
+        print(f"DEBUG: Update data: {update_data}")
+        
+        config.update_record(token, "Stills", record_id, update_data)
         print(f"SUCCESS [generate_description]: {stills_id}")
         sys.exit(0)
 
