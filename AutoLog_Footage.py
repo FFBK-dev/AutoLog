@@ -54,6 +54,10 @@ STATUSES = {
 # Initialize OpenAI
 openai.api_key = CONFIG['openai_api_key']
 
+# Load prompts from prompts.json
+with open(os.path.join(os.path.dirname(__file__), 'prompts.json'), 'r') as f:
+    PROMPTS = json.load(f)
+
 @dataclass
 class ProcessingTask:
     """Data class for processing tasks"""
@@ -316,46 +320,33 @@ class MultiThreadedKeyframeProcessor:
             # Process each ready footage
             for footage_id, keyframes in ready_footages:
                 try:
-                    # Get footage record
                     footage_records = self.session.find_records(
                         CONFIG['layout_footage'],
                         {"INFO_FTG_ID": footage_id}
                     )
-                    
                     if not footage_records:
                         continue
-                    
                     footage_record = footage_records[0]
                     footage_record_id = footage_record["recordId"]
                     footage_field_data = footage_record["fieldData"]
-                    filename = footage_field_data.get("Filename", "")
-                    existing_description = footage_field_data.get("INFO_Description", "")
-                    
                     print(f"📝 Generating description for {footage_id} ({len(keyframes)} keyframes)")
-                    
-                    # Generate description
                     title, description, csv_data = self.generate_video_description(
                         [kf["fieldData"] for kf in keyframes],
-                        filename,
-                        existing_description
+                        footage_field_data
                     )
-                    
                     if title and description:
-                        # Update footage record
                         success = self.session.update_record(
                             CONFIG['layout_footage'],
                             footage_record_id,
                             {
                                 "INFO_Title": title,
                                 "INFO_Description": description,
-                                "INFO_Video_Events": csv_data
+                                "INFO_Video_Events": csv_data,
+                                "dev_AutoLog_Status": "3 - Ready for Text Embedding"
                             }
                         )
-                        
                         if success:
                             print(f"✅ Description generated for {footage_id}: '{title}'")
-                            
-                            # Update ALL keyframes to VIDEO_DESCRIPTION_GENERATED
                             updated = 0
                             for keyframe in keyframes:
                                 if self.session.update_record(
@@ -364,9 +355,7 @@ class MultiThreadedKeyframeProcessor:
                                     {"Keyframe_Status": STATUSES['VIDEO_DESCRIPTION_GENERATED']}
                                 ):
                                     updated += 1
-                            
                             print(f"✅ Updated status for {updated}/{len(keyframes)} keyframes")
-                
                 except Exception as e:
                     print(f"❌ Error processing {footage_id}: {e}")
                 
@@ -545,11 +534,8 @@ class MultiThreadedKeyframeProcessor:
             CONFIG['layout_keyframes'], 
             {"Keyframe_Status": STATUSES['THUMBNAIL_CREATED']}
         )
-        
         if not records:
             return
-        
-        # Create tasks
         tasks = []
         for record in records:
             field_data = record["fieldData"]
@@ -557,14 +543,25 @@ class MultiThreadedKeyframeProcessor:
             footage_id = field_data.get("FootageID")
             timecode = field_data.get("TC_IN_Seconds")
             video_path = field_data.get("Footage::SPECS_Filepath_Server")
-            
-            if not all([keyframe_id, timecode, video_path]):
+            if not all([keyframe_id, timecode, video_path, footage_id]):
                 print(f"⚠️ Skipping {keyframe_id} - Missing required fields:")
                 if not keyframe_id: print("   - Missing KeyframeID")
                 if not timecode: print("   - Missing TC_IN_Seconds")
                 if not video_path: print("   - Missing video path")
+                if not footage_id: print("   - Missing footage ID")
                 continue
-                
+            # Check dev_Autolog_status on parent footage record
+            footage_records = self.session.find_records(
+                CONFIG['layout_footage'],
+                {"INFO_FTG_ID": footage_id}
+            )
+            if not footage_records:
+                print(f"⚠️ Skipping {keyframe_id} - No parent footage record found")
+                continue
+            dev_autolog_status = footage_records[0]["fieldData"].get("dev_AutoLog_Status", "")
+            if dev_autolog_status.strip().lower() != "2 - processing":
+                print(f"⏸️ Skipping {keyframe_id} - dev_AutoLog_Status is not '2 - Processing' (actual value: '{dev_autolog_status}')")
+                continue
             tasks.append(ProcessingTask(
                 record_id=record["recordId"],
                 record_data={
@@ -575,16 +572,12 @@ class MultiThreadedKeyframeProcessor:
                 },
                 task_type='caption'
             ))
-        
         if not tasks:
             return
-        
-        # Process captions in parallel
         print(f"📝 Processing {len(tasks)} captions...")
         successful = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG['max_workers_captions']) as executor:
             future_to_task = {executor.submit(self.process_single_caption, task): task for task in tasks}
-            
             for future in concurrent.futures.as_completed(future_to_task):
                 try:
                     result = future.result()
@@ -592,7 +585,6 @@ class MultiThreadedKeyframeProcessor:
                         successful += 1
                 except Exception:
                     pass
-        
         print(f"✅ Captions: {successful}/{len(tasks)} completed")
     
     def process_single_caption(self, task: ProcessingTask) -> Dict:
@@ -603,53 +595,50 @@ class MultiThreadedKeyframeProcessor:
             footage_id = task.record_data['footage_id']
             timecode = task.record_data['timecode']
             video_path = task.record_data['video_path']
-            
-            gpt_prompt = (
-                "You are generating brief visual descriptions for frames from historical footage. "
-                "Keep it concise, under 65 tokens is crucial for further embedding gneeration. "
-                " Avoid phrases like 'this image shows'. "
-                "Just describe: people, setting, action, objects, and approximate shot type."
-            )
-            
             # Get footage context
             footage_records = self.session.find_records(
                 CONFIG['layout_footage'], 
                 {"INFO_FTG_ID": footage_id}
             )
-            
-            filename_context = ""
-            description_context = ""
-            if footage_records:
-                footage_fields = footage_records[0]["fieldData"]
-                filename_context = footage_fields.get("INFO_Original_FileName", "")
-                description_context = footage_fields.get("INFO_Description", "")
-            
+            if not footage_records:
+                return {'success': False, 'error': f'No footage record for {footage_id}'}
+            footage_fields = footage_records[0]["fieldData"]
+            info_ftg_id = footage_fields.get("INFO_FTG_ID", "")
+            info_metadata = footage_fields.get("INFO_Metadata", "")
+            info_source = footage_fields.get("INFO_Source", "")
+            info_filename = footage_fields.get("INFO_Filename", "")
+            # Determine prompt type
+            if info_ftg_id.startswith("AF"):
+                prompt_template = PROMPTS["caption_AF"]
+                prompt_text = prompt_template.format(
+                    INFO_Metadata=info_metadata,
+                    INFO_Source=info_source,
+                    INFO_Filename=info_filename
+                )
+            elif info_ftg_id.startswith("OCF"):
+                prompt_template = PROMPTS["caption_OCF"]
+                prompt_text = prompt_template.format(
+                    INFO_Metadata=info_metadata
+                )
+            else:
+                prompt_text = "No valid footage type detected."
             # Generate thumbnail for captioning
             thumb_path = os.path.join(CONFIG['tmp_dir'], f"caption_{keyframe_id}.jpg")
             ffmpeg_cmd = [
                 CONFIG['ffmpeg_path'], "-y", "-ss", timecode,
                 "-i", video_path, "-frames:v", "1", thumb_path,
-                "-loglevel", "quiet"  # Suppress FFmpeg output
+                "-loglevel", "quiet"
             ]
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            
-            # Get caption from OpenAI
             with open(thumb_path, "rb") as f:
                 image_base64 = base64.b64encode(f.read()).decode("utf-8")
-            
             response = openai.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": gpt_prompt},
+                    {"role": "system", "content": prompt_text},
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": f"""Filename: {filename_context}
-Existing description: {description_context}
-Generate keyframe description:"""
-                            },
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
@@ -658,11 +647,8 @@ Generate keyframe description:"""
                     }
                 ]
             )
-            
             caption = response.choices[0].message.content.strip()
             caption_clean = self.remove_markdown(caption)
-            
-            # Update record
             success = self.session.update_record(
                 CONFIG['layout_keyframes'], record_id,
                 {
@@ -670,18 +656,13 @@ Generate keyframe description:"""
                     "Keyframe_Status": STATUSES['CAPTION_GENERATED']
                 }
             )
-            
-            # Cleanup
             if os.path.exists(thumb_path):
                 os.remove(thumb_path)
-            
             if success:
                 return {'success': True, 'caption': caption_clean}
             else:
                 return {'success': False, 'error': 'Failed to update record'}
-                
         except Exception as e:
-            # Cleanup on error
             thumb_path = os.path.join(CONFIG['tmp_dir'], f"caption_{task.record_data['keyframe_id']}.jpg")
             if os.path.exists(thumb_path):
                 os.remove(thumb_path)
@@ -969,73 +950,56 @@ Generate keyframe description:"""
                 os.remove(audio_path)
             return {'success': False, 'error': str(e)}
     
-    def generate_video_description(self, keyframes: List[Dict], filename: str, existing_description: str) -> Tuple[str, str, str]:
+    def generate_video_description(self, keyframes: List[Dict], footage_fields: Dict) -> Tuple[str, str, str]:
         """Generate comprehensive video description from keyframes"""
         try:
+            info_ftg_id = footage_fields.get("INFO_FTG_ID", "")
+            info_metadata = footage_fields.get("INFO_Metadata", "")
+            info_source = footage_fields.get("INFO_Source", "")
+            info_filename = footage_fields.get("INFO_Filename", "")
             # Sort keyframes
             keyframes_sorted = sorted(keyframes, key=lambda x: x.get("KeyframeID", ""))
-            
-            # Analyze content
             total_keyframes = len(keyframes_sorted)
             keyframes_with_audio = sum(1 for kf in keyframes_sorted if kf.get("Keyframe_Transcript", "").strip())
             keyframes_with_visuals = sum(1 for kf in keyframes_sorted if kf.get("Keyframe_GPT_Caption", "").strip())
-            
             if keyframes_with_visuals == 0:
                 return "No Visual Content", "This video appears to lack visual content data.", ""
-            
-            # Build CSV data
             full_csv_lines = ["Frame,Visual Description,Audio Transcript"]
             for kf in keyframes_sorted:
                 desc = kf.get("Keyframe_GPT_Caption", "").replace("\n", " ").strip()
                 trans = kf.get("Keyframe_Transcript", "").replace("\n", " ").strip()
                 frame_id = kf.get("KeyframeID", "")
                 full_csv_lines.append(f"{frame_id},{desc},{trans}")
-            
             csv_data = "\n".join(full_csv_lines)
-            
-            # Check if it's a silent video
             is_silent = keyframes_with_audio == 0
-            
-            # Prepare the OpenAI request
-            system_prompt = (
-                "You are generating catalog metadata for a video file. "
-                "The input provides frame-level visual descriptions and audio transcripts. "
-                "Empty audio transcripts indicate silent video - this is normal. "
-                "Focus on the visual content to create meaningful catalog metadata. "
-                "Provide your response in exactly this format:\n"
-                "Title: [A concise, descriptive title for the video]\n"
-                "Description: [A thorough catalog description of the video content]\n\n"
-                "Do not include any other text, prefixes, or formatting. "
-                "Do not mention 'missing content' or 'file integrity issues' for silent videos. "
-                "The title should be 3-8 words. The description should be 2-4 sentences."
-            )
-            
-            # Prepare context note
+            # Select prompt
+            if info_ftg_id.startswith("AF"):
+                prompt_template = PROMPTS["description_AF"]
+                prompt_text = prompt_template.format(
+                    INFO_Metadata=info_metadata,
+                    INFO_Source=info_source,
+                    INFO_Filename=info_filename
+                )
+            elif info_ftg_id.startswith("OCF"):
+                prompt_template = PROMPTS["description_OCF"]
+                prompt_text = prompt_template.format(
+                    INFO_Metadata=info_metadata
+                )
+            else:
+                prompt_text = "No valid footage type detected."
             silent_note = "[SILENT VIDEO - NO AUDIO]" if is_silent else ""
-            
-            user_prompt = f"""Filename: {filename}
-Existing description: {existing_description}
-{silent_note}
-
-Frame-level data:
-{csv_data}"""
-            
+            user_prompt = f"{silent_note}\n\nFrame-level data:\n{csv_data}"
             response = openai.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": prompt_text},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.3
             )
-            
             final_response = response.choices[0].message.content.strip()
-            
-            # Parse title and description
             title, description = self.parse_title_description(final_response)
-            
             return title, description, csv_data
-            
         except Exception as e:
             print(f"❌ Description generation error: {e}")
             return "", "", ""

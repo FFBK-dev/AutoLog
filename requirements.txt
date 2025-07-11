@@ -1,0 +1,9 @@
+requests>=2.31.0
+urllib3>=2.0.7
+numpy>=1.24.0
+openai-whisper>=20231117
+Pillow>=10.0.0
+beautifulsoup4>=4.12.0
+fastapi>=0.100.0
+opencv-python>=4.8.0
+scenedetect>=0.6.0 
