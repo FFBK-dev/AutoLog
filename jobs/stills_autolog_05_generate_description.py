@@ -1,7 +1,13 @@
 # jobs/stills_autolog_05_generate_description.py
-import sys, os, json, base64
+import sys, os, json, time, requests, base64
+import warnings
 from pathlib import Path
 import openai
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+# Add the parent directory to the path to import your existing config
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -12,15 +18,23 @@ FIELD_MAPPING = {
     "metadata": "INFO_Metadata",
     "user_prompt": "AI_Prompt",
     "description": "INFO_Description",
+    "description_max_tokens": "AI_Description_MaxTokens",
     "date": "INFO_Date",
     "server_path": "SPECS_Filepath_Server",
-    "globals_api_key": "SystemGlobals_AutoLog_OpenAI_API_Key"
+    "globals_api_key": "SystemGlobals_AutoLog_OpenAI_API_Key",
+    "run_count": "AI_RunCount"
 }
 
 def load_prompts():
     prompts_path = Path(__file__).resolve().parent.parent / "prompts.json"
     with open(prompts_path, 'r') as f:
         return json.load(f)
+
+def truncate_text_for_clip(text, max_chars=250):
+    """Truncate text to fit CLIP token limits (roughly 77 tokens = ~250 chars safely)"""
+    if not text:
+        return ""
+    return text[:max_chars] if len(text) > max_chars else text
 
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
@@ -71,21 +85,48 @@ if __name__ == "__main__":
             }
         ]
         
+        print(f"DEBUG: Making OpenAI API call for stills_id: {stills_id}")
+        
         response = openai.chat.completions.create(
             model="gpt-4o", 
             messages=messages, 
             response_format={"type": "json_object"}
         )
-        content = json.loads(response.choices[0].message.content)
         
-        print(f"DEBUG: OpenAI response content: {content}")
+        print(f"DEBUG: OpenAI response received: {response}")
+        
+        # Check if response has choices and content
+        if not response.choices:
+            raise ValueError("OpenAI API returned no choices in response")
+        
+        if not response.choices[0].message:
+            raise ValueError("OpenAI API returned no message in response")
+        
+        content_raw = response.choices[0].message.content
+        print(f"DEBUG: Raw content from OpenAI: {content_raw}")
+        
+        if content_raw is None:
+            raise ValueError("OpenAI API returned None content - this may indicate rate limiting, content filtering, or API issues")
+        
+        content = json.loads(content_raw)
+        
+        print(f"DEBUG: Parsed OpenAI response content: {content}")
+        
+        # Get current run count and increment by 1
+        current_run_count = record_data.get(FIELD_MAPPING["run_count"], 0)
+        if current_run_count is None:
+            current_run_count = 0
+        new_run_count = current_run_count + 1
         
         update_data = {
             FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
-            FIELD_MAPPING["date"]: content.get("date") or content.get("Date", "")
+            FIELD_MAPPING["description_max_tokens"]: truncate_text_for_clip(content.get("description") or content.get("Description", "")),
+            FIELD_MAPPING["date"]: content.get("date") or content.get("Date", ""),
+            FIELD_MAPPING["run_count"]: new_run_count
         }
         
         print(f"DEBUG: Update data: {update_data}")
+        print(f"DEBUG: Incremented AI_RunCount from {current_run_count} to {new_run_count}")
         
         config.update_record(token, "Stills", record_id, update_data)
         print(f"SUCCESS [generate_description]: {stills_id}")
@@ -93,4 +134,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         sys.stderr.write(f"ERROR [generate_description] on {stills_id}: {e}\n")
-        sys.exit(1)
+        sys.exit(1) 

@@ -1,6 +1,12 @@
 # jobs/stills_autolog_03_parse_metadata.py
-import sys, subprocess, json
+import sys, os, json, time, requests, subprocess
+import warnings
 from pathlib import Path
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+# Add the parent directory to the path to import your existing config
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -38,20 +44,32 @@ if __name__ == "__main__":
         description = safe_get(metadata, 'IPTC:Caption-Abstract')
         copyright_notice = safe_get(metadata, 'IPTC:CopyrightNotice')
         byline = safe_get(metadata, 'IPTC:By-line')
-        url = safe_get(metadata, 'XMP:CreatorAddress')
+        exif_url = safe_get(metadata, 'XMP:CreatorAddress')
         date_created = safe_get(metadata, 'IPTC:DateCreated', '').replace(':', '/')
         copyright_final = copyright_notice if copyright_notice else byline
         filename = Path(import_path).stem
         archival_id = filename.replace("GettyImages-", "")
 
+        # Check if URL already exists (might have been generated in previous step)
+        existing_url = record_data.get(FIELD_MAPPING["url"], '')
+        
         field_data = {
             FIELD_MAPPING["description_orig"]: description,
             FIELD_MAPPING["copyright"]: copyright_final,
             FIELD_MAPPING["archival_id"]: archival_id,
-            FIELD_MAPPING["url"]: url,
             FIELD_MAPPING["date"]: date_created,
             FIELD_MAPPING["metadata"]: json.dumps(metadata, indent=2)
         }
+        
+        # Only set URL from EXIF if we don't already have one
+        if exif_url and not existing_url:
+            field_data[FIELD_MAPPING["url"]] = exif_url
+            print(f"  -> Set URL from EXIF: {exif_url}")
+        elif existing_url:
+            print(f"  -> Keeping existing URL: {existing_url}")
+        elif exif_url:
+            print(f"  -> Set URL from EXIF: {exif_url}")
+            field_data[FIELD_MAPPING["url"]] = exif_url
 
         config.update_record(token, "Stills", record_id, field_data)
         print(f"SUCCESS [parse_metadata]: {stills_id}")

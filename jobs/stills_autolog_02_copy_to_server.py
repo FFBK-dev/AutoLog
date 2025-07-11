@@ -1,7 +1,13 @@
 # jobs/stills_autolog_02_copy_to_server.py
-import sys, os
+import sys, os, json, time, requests
+import warnings
 from pathlib import Path
 from PIL import Image, ImageFile
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+# Add the parent directory to the path to import your existing config
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -33,7 +39,15 @@ def calculate_destination_path(stills_id: str, globals_data: dict) -> str:
     folder_name = f"S{range_start:05d}-S{range_end:05d}"
     
     destination_folder = os.path.join(stills_root, folder_name)
-    os.makedirs(destination_folder, exist_ok=True)
+    
+    # Thread-safe directory creation
+    try:
+        os.makedirs(destination_folder, exist_ok=True)
+    except OSError as e:
+        # Another thread might have created it, check if it exists
+        if not os.path.exists(destination_folder):
+            raise e
+    
     return os.path.join(destination_folder, f"{stills_id}.jpg")
 
 if __name__ == "__main__":

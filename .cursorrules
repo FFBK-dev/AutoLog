@@ -1,0 +1,246 @@
+# FileMaker Backend Development Rules
+
+## Project Structure & Naming Conventions
+
+### Job Scripts (/jobs/)
+- Name format: `{workflow}_{step}_{description}.py`
+- Example: `stills_autolog_01_get_file_info.py`
+- Always include `__ARGS__` list at top defining expected arguments
+- Include `FIELD_MAPPING` dictionary for FileMaker field mappings
+- Use lowercase with underscores for field mapping keys
+
+### Controller Scripts (/controllers/)
+- Name format: `{workflow}_controller.py`
+- Example: `stills_autolog_controller.py`
+- Must include `WORKFLOW_STEPS` dictionary mapping statuses to scripts
+- Include error formatting and parallel processing patterns
+- Support both polling and batch modes
+
+### File Organization
+- `/jobs/` - Individual API endpoint scripts
+- `/controllers/` - Long-running polling services
+- `/legacy/` - Scripts to be converted (temporary)
+- Root level - Main API server and configuration
+
+## Required Imports & Setup Patterns
+
+### Standard Header for Job Scripts
+```python
+#!/usr/bin/env python3
+import sys
+import warnings
+from pathlib import Path
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import config
+
+__ARGS__ = ["required_arg1", "optional_arg2"]  # Define arguments
+
+FIELD_MAPPING = {
+    "local_key": "FILEMAKER_FIELD_NAME",
+    "status": "AutoLog_Status",
+    # Always use descriptive local keys
+}
+```
+
+### Standard Header for Controllers
+```python
+import subprocess
+import sys
+import time
+import concurrent.futures
+import threading
+from pathlib import Path
+import requests
+import traceback
+from datetime import datetime
+import warnings
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import config
+```
+
+## Configuration & API Patterns
+
+### Always Use config.py for FileMaker Access
+- `token = config.get_token()` for authentication
+- `config.url("path")` for URL construction  
+- `config.api_headers(token)` for request headers
+- `config.find_record_id(token, layout, query)` for record lookup
+
+### API Call Pattern
+```python
+response = requests.post/patch/get(
+    config.url("layouts/Layout_Name/endpoint"),
+    headers=config.api_headers(token),
+    json=payload,
+    verify=False  # SSL handling is standardized
+)
+response.raise_for_status()
+```
+
+## Error Handling Standards
+
+### User-Facing Errors (Controllers)
+```python
+def format_error_message(record_id, step_name, error_details, error_type="Processing Error"):
+    """Format error messages for AI_DevConsole field"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean_error = error_details.strip()
+    if clean_error.startswith("Error:"):
+        clean_error = clean_error[6:].strip()
+    if len(clean_error) > 200:
+        clean_error = clean_error[:197] + "..."
+    return f"[{timestamp}] {error_type} - {step_name}\nRecord: {record_id}\nIssue: {clean_error}"
+```
+
+### Write Errors to FileMaker
+- Use `AI_DevConsole` field for user-visible errors
+- Format errors with timestamps and context
+- Truncate long error messages appropriately
+- Continue processing other records on individual failures
+
+### Subprocess Timeouts
+- Use 5-minute timeout (300 seconds) for subprocess operations
+- Handle `subprocess.TimeoutExpired` exceptions
+- Log timeout errors to both console and FileMaker
+
+## Workflow Management
+
+### Status Field Conventions
+```python
+WORKFLOW_STEPS = {
+    "1 - Pending": {"script": "script_name.py", "next_status": "2 - Next Status"},
+    "2 - Processing": {"script": "script_name.py", "next_status": "3 - Complete"},
+    # Status format: "{number} - {description}"
+}
+```
+
+### Status Updates
+```python
+def update_status(record_id, new_status):
+    payload = {"fieldData": {FIELD_MAPPING["status"]: new_status}}
+    return requests.patch(
+        config.url(f"layouts/Layout/records/{record_id}"),
+        headers=config.api_headers(token),
+        json=payload,
+        verify=False
+    )
+```
+
+## Parallel Processing Patterns
+
+### ThreadPoolExecutor Usage
+```python
+max_workers = min(10, len(records))  # Reasonable worker limits
+with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    futures = [executor.submit(process_function, record) for record in records]
+    for future in concurrent.futures.as_completed(futures):
+        try:
+            result = future.result()
+            # Handle result
+        except Exception as e:
+            # Handle error gracefully
+```
+
+### Thread Safety
+- Use threading locks for shared resources
+- Handle FileMaker session management carefully in threaded contexts
+- Clean up resources in finally blocks or context managers
+
+## Field Naming Conventions
+
+### FileMaker Field Prefixes
+- `INFO_` - General information/metadata fields
+- `SPECS_` - Technical specifications  
+- `AI_` - AI-generated content fields
+- `AutoLog_Status` - Workflow status tracking
+- `AI_DevConsole` - User-visible error/debug messages
+
+### Local Variable Naming
+- Use descriptive names that match the field purpose
+- Prefer snake_case for local variables
+- Use clear field mapping keys in FIELD_MAPPING
+
+## Code Quality Standards
+
+### Documentation
+- Include docstrings for main functions
+- Comment complex logic and FileMaker-specific operations
+- Document workflow step dependencies
+
+### Error Logging
+- Log to console for system-level debugging
+- Log to FileMaker fields for user visibility
+- Include context (record IDs, step names) in error messages
+
+### Resource Management
+- Clean up temporary files in try/finally blocks
+- Use context managers for file operations
+- Close CV2 video captures explicitly
+
+### Performance
+- Use pagination for large FileMaker queries (limit: 500)
+- Process records in reasonable batches
+- Implement appropriate timeouts for external operations
+
+## Testing & Debugging Support
+
+### Controller Modes
+- Support polling mode for continuous operation
+- Support batch mode with specific record IDs for testing
+- Include debug output for workflow state monitoring
+
+### Debugging Output
+```python
+print(f"Processing {record_id} (Status: {current_status})")
+print(f"SUCCESS/FAILURE: {operation_description}")
+```
+
+## Legacy Code Conversion
+
+### When Converting Legacy Scripts
+1. Break monolithic scripts into individual job scripts
+2. Create corresponding controller for workflow management  
+3. Map existing status fields to new workflow steps
+4. Preserve existing functionality while improving error handling
+5. Add parallel processing where appropriate
+6. Migrate to config.py for FileMaker access
+
+### Maintain Backward Compatibility
+- Keep existing field names when possible
+- Preserve existing status values and transitions
+- Maintain existing API behavior for external integrations
+
+## File Structure Requirements
+
+### Job Scripts Must Include
+- Shebang line: `#!/usr/bin/env python3`
+- Argument definition: `__ARGS__ = [...]`
+- Field mapping: `FIELD_MAPPING = {...}`
+- Main function with proper error handling
+- Command-line argument parsing
+
+### Controllers Must Include  
+- Workflow step definitions
+- Error formatting functions
+- Parallel processing implementation
+- Both polling and batch mode support
+- Status-based workflow progression
+
+## Prohibited Patterns
+
+### Avoid These Anti-Patterns
+- Direct FileMaker API calls without using config.py
+- Hardcoded server URLs or credentials
+- Blocking operations without timeouts
+- Unhandled exceptions that crash the entire workflow
+- Missing SSL warning suppression
+- Processing large datasets without pagination
+- Thread-unsafe operations on shared resources 

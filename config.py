@@ -62,6 +62,36 @@ def update_record(tok: str, layout: str, rec_id: str, field_data: dict):
 
 # --- NEW HELPER FUNCTIONS (Additive) ---
 
+def execute_script(token: str, script_name: str, layout_name: str = "Stills", script_parameter: str = "") -> dict:
+    """
+    Execute a FileMaker script on the server (PSOS).
+    
+    Args:
+        token: Authentication token
+        script_name: Name of the script to execute
+        layout_name: Layout to use as context for script execution (default: "Stills")
+        script_parameter: Optional parameter to pass to the script
+    
+    Returns:
+        dict: Response from the script execution
+    """
+    # Build the URL with layout context
+    script_url = f"layouts/{layout_name}/script/{script_name}"
+    
+    # Add script parameter if provided
+    params = {}
+    if script_parameter:
+        params["script.param"] = script_parameter
+    
+    r = requests.get(
+        url(script_url),
+        headers=api_headers(token),
+        params=params,
+        verify=False
+    )
+    r.raise_for_status()
+    return r.json()
+
 def get_system_globals(token: str) -> dict:
     """
     Fetches the single record from the Settings table.
