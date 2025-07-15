@@ -55,7 +55,8 @@ STATUSES = {
 openai.api_key = CONFIG['openai_api_key']
 
 # Load prompts from prompts.json
-with open(os.path.join(os.path.dirname(__file__), 'prompts.json'), 'r') as f:
+prompts_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'prompts.json')
+with open(prompts_path, 'r') as f:
     PROMPTS = json.load(f)
 
 @dataclass

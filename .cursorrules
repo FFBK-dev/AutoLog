@@ -1,6 +1,21 @@
 # FileMaker Backend Development Rules
 
+## Project Overview & Architecture
+
+# This is a FileMaker backend system providing:
+# - Manual job execution via REST API endpoints
+# - Automatic pending item discovery and batch processing
+# - Comprehensive job tracking and monitoring
+# - Resilient workflows with retry mechanisms and graceful degradation
+
 ## Project Structure & Naming Conventions
+
+### Main API Server (API.py)
+- **FastAPI application** with startup/shutdown event management
+- **Job submission and tracking** with detailed logging
+- **Manual job execution** with background task processing
+- **Status monitoring** and job statistics
+- **Configuration sections** clearly separated and documented
 
 ### Job Scripts (/jobs/)
 - Name format: `{workflow}_{step}_{description}.py`
@@ -8,21 +23,94 @@
 - Always include `__ARGS__` list at top defining expected arguments
 - Include `FIELD_MAPPING` dictionary for FileMaker field mappings
 - Use lowercase with underscores for field mapping keys
+- Support both single item and batch processing where applicable
 
-### Controller Scripts (/controllers/)
-- Name format: `{workflow}_controller.py`
-- Example: `stills_autolog_controller.py`
-- Must include `WORKFLOW_STEPS` dictionary mapping statuses to scripts
-- Include error formatting and parallel processing patterns
-- Support both polling and batch modes
+### Main Workflow Scripts
+- Name format: `{workflow}_00_run_all.py`
+- Example: `stills_autolog_00_run_all.py`
+- **No arguments** - automatically discovers pending items
+- Uses `find_pending_items()` to query FileMaker for items to process
+- Processes items in parallel batches for efficiency
+- Comprehensive logging and error handling
 
 ### File Organization
 - `/jobs/` - Individual API endpoint scripts
-- `/controllers/` - Long-running polling services
 - `/legacy/` - Scripts to be converted (temporary)
-- Root level - Main API server and configuration
+- Root level - Main API server, configuration, and core utilities
+
+## Modern FastAPI Patterns
+
+### Application Lifecycle Management
+```python
+app = FastAPI(title="FM Automation API")
+
+@app.on_event("startup")
+async def startup_event():
+    logging.info("🚀 Starting FM Automation API")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logging.info("🔄 Shutting down FM Automation API")
+```
+
+### Background Task Management
+```python
+@app.post("/run/{job}", dependencies=[Depends(check_key)])
+def run_job(job: str, background_tasks: BackgroundTasks, payload: dict = Body({})):
+    """Execute a job with tracking and background processing."""
+    job_id = job_tracker.submit_job(job, args)
+    background_tasks.add_task(run_job_with_tracking, job_id, cmd)
+    return {"job_id": job_id, "submitted": True}
+```
+
+### Job Tracking and Monitoring
+```python
+class JobTracker:
+    def __init__(self):
+        self.jobs_submitted = 0
+        self.jobs_completed = 0
+        self.current_jobs = {}
+        self.lock = threading.Lock()
+    
+    def submit_job(self, job_name: str, args: list) -> str:
+        with self.lock:
+            job_id = f"{job_name}_{self.jobs_submitted}_{int(time.time())}"
+            self.current_jobs[job_id] = {
+                "job_name": job_name,
+                "args": args,
+                "submitted_at": datetime.now(),
+                "status": "running"
+            }
+            return job_id
+```
 
 ## Required Imports & Setup Patterns
+
+### Standard Header for Main Workflow Scripts
+```python
+#!/usr/bin/env python3
+import sys
+import warnings
+from pathlib import Path
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import config
+
+# No arguments - automatically discovers pending items
+__ARGS__ = []
+
+def find_pending_items(token):
+    """Find all items with pending status."""
+    query = {
+        "query": [{FIELD_MAPPING["status"]: "0 - Pending File Info"}],
+        "limit": 100  # Reasonable batch size
+    }
+    # Query FileMaker and return stills_ids
+    return stills_ids
+```
 
 ### Standard Header for Job Scripts
 ```python
@@ -46,24 +134,27 @@ FIELD_MAPPING = {
 }
 ```
 
-### Standard Header for Controllers
+### Standard Header for API Server
 ```python
-import subprocess
-import sys
-import time
-import concurrent.futures
-import threading
-from pathlib import Path
-import requests
-import traceback
-from datetime import datetime
+#!/usr/bin/env python3
+"""
+Application Description
+
+This API server provides:
+1. Manual job submission via endpoints
+2. Job tracking and monitoring
+3. Automatic pending item discovery
+4. Resilient error handling
+"""
+
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Body
+import logging
 import warnings
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-import config
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 ```
 
 ## Configuration & API Patterns
@@ -74,85 +165,288 @@ import config
 - `config.api_headers(token)` for request headers
 - `config.find_record_id(token, layout, query)` for record lookup
 
-### API Call Pattern
+### API Call Pattern with Enhanced Error Handling and Retry Logic
 ```python
-response = requests.post/patch/get(
-    config.url("layouts/Layout_Name/endpoint"),
-    headers=config.api_headers(token),
-    json=payload,
-    verify=False  # SSL handling is standardized
-)
-response.raise_for_status()
+def get_current_record_data(record_id, token, max_retries=3):
+    """Get current record data from FileMaker with retry logic."""
+    current_token = token
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(
+                config.url(f"layouts/Stills/records/{record_id}"), 
+                headers=config.api_headers(current_token), 
+                verify=False,
+                timeout=30
+            )
+            
+            if response.status_code == 401:
+                current_token = config.get_token()  # Refresh token
+                continue
+            
+            response.raise_for_status()
+            return response.json()['response']['data'][0], current_token
+            
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+                continue
+    
+    return None, current_token
+```
+
+## Automatic Pending Item Discovery
+
+### Main Workflow Pattern
+```python
+def find_pending_items(token):
+    """Find all items with '0 - Pending File Info' status."""
+    try:
+        print(f"🔍 Searching for items with '0 - Pending File Info' status...")
+        
+        query = {
+            "query": [{FIELD_MAPPING["status"]: "0 - Pending File Info"}],
+            "limit": 100  # Reasonable batch size
+        }
+        
+        response = requests.post(
+            config.url("layouts/Stills/records/_find"),
+            headers=config.api_headers(token),
+            json=query,
+            verify=False
+        )
+        
+        if response.status_code == 404:
+            print(f"📋 No pending items found")
+            return []
+        
+        response.raise_for_status()
+        records = response.json()['response']['data']
+        
+        # Extract stills_ids from the records
+        stills_ids = []
+        for record in records:
+            stills_id = record['fieldData'].get(FIELD_MAPPING["stills_id"])
+            if stills_id:
+                stills_ids.append(stills_id)
+        
+        return stills_ids
+        
+    except Exception as e:
+        print(f"❌ Error finding pending items: {e}")
+        return []
+```
+
+### Batch Processing Integration
+```python
+if __name__ == "__main__":
+    try:
+        token = config.get_token()
+        
+        # Find all pending items automatically
+        stills_ids = find_pending_items(token)
+        
+        if not stills_ids:
+            print(f"✅ No pending items found - nothing to process")
+            sys.exit(0)
+        
+        # Process items in batch
+        if len(stills_ids) == 1:
+            success = run_complete_workflow(stills_ids[0], token)
+        else:
+            results = run_batch_workflow(stills_ids, token)
+            
+    except Exception as e:
+        print(f"Critical startup error: {e}")
+        sys.exit(1)
 ```
 
 ## Error Handling Standards
 
-### User-Facing Errors (Controllers)
+### Enhanced Error Formatting
 ```python
 def format_error_message(record_id, step_name, error_details, error_type="Processing Error"):
     """Format error messages for AI_DevConsole field"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_error = error_details.strip()
+    
+    # Clean up common error prefixes
     if clean_error.startswith("Error:"):
         clean_error = clean_error[6:].strip()
-    if len(clean_error) > 200:
-        clean_error = clean_error[:197] + "..."
+    if clean_error.startswith("FATAL ERROR:"):
+        clean_error = clean_error[12:].strip()
+    
+    # Generous truncation for FileMaker (1000 chars instead of 200)
+    if len(clean_error) > 1000:
+        clean_error = clean_error[:997] + "..."
+    
     return f"[{timestamp}] {error_type} - {step_name}\nRecord: {record_id}\nIssue: {clean_error}"
 ```
 
-### Write Errors to FileMaker
-- Use `AI_DevConsole` field for user-visible errors
-- Format errors with timestamps and context
-- Truncate long error messages appropriately
-- Continue processing other records on individual failures
+### Error Filtering for Storage
+```python
+def filter_warnings_for_storage(text):
+    """Filter out specific warnings for FileMaker storage while preserving errors."""
+    if not text:
+        return ""
+    
+    lines = text.split('\n')
+    filtered = []
+    
+    for line in lines:
+        # Only filter very specific urllib3 warnings
+        is_urllib3_warning = (
+            line.strip().startswith('warnings.warn(') and 
+            any(pattern in line for pattern in [
+                '/urllib3/__init__.py',
+                'NotOpenSSLWarning',
+                'urllib3 v2 only supports OpenSSL'
+            ])
+        )
+        
+        if not is_urllib3_warning:
+            filtered.append(line)
+    
+    return '\n'.join(filtered).strip()
+```
 
-### Subprocess Timeouts
+### Subprocess Timeouts & Management
 - Use 5-minute timeout (300 seconds) for subprocess operations
+- Use 10-minute timeout (600 seconds) for refresh operations
 - Handle `subprocess.TimeoutExpired` exceptions
 - Log timeout errors to both console and FileMaker
+- Support debug mode for real-time output
+
+## Logging Standards
+
+### Emoji-Based Logging for Visual Clarity
+```python
+# Logging patterns with emojis
+logging.info(f"🚀 Starting operation: {operation_name}")
+logging.info(f"📋 Processing item: {item_id}")
+logging.info(f"✅ Success: {operation_description}")
+logging.error(f"❌ Error: {error_description}")
+logging.warning(f"⚠️ Warning: {warning_description}")
+logging.info(f"🔍 Debug: {debug_info}")
+logging.info(f"🔄 Processing: {item_description}")
+logging.info(f"⏱️ Timeout: {timeout_description}")
+```
+
+### Structured Job Logging
+```python
+def run_job_with_tracking(job_id: str, cmd: List[str]):
+    """Run a job with comprehensive tracking and logging."""
+    try:
+        logging.info(f"🚀 Starting {job_id}: {' '.join(cmd)}")
+        
+        # Track individual items in batch jobs
+        individual_items = []
+        
+        # Parse output for progress tracking
+        while True:
+            # Real-time output parsing
+            if "=== Starting AutoLog workflow for" in line:
+                item_id = extract_item_id(line)
+                logging.info(f"📋 {job_id} - Starting item: {item_id}")
+            elif "=== Workflow COMPLETED successfully for" in line:
+                item_id = extract_item_id(line)
+                logging.info(f"✅ {job_id} - Completed item: {item_id}")
+            # ... more parsing logic
+        
+        # Final summary
+        if return_code == 0:
+            logging.info(f"✅ {job_id} completed successfully")
+        else:
+            logging.error(f"❌ {job_id} failed with exit code {return_code}")
+            
+    finally:
+        job_tracker.complete_job(job_id)
+```
+
+## Batch Processing Architecture
+
+### Input Handling
+```python
+# Support both single items and JSON arrays
+try:
+    parsed_ids = json.loads(input_string)
+    if isinstance(parsed_ids, list):
+        items = parsed_ids
+    else:
+        items = [str(parsed_ids)]
+except json.JSONDecodeError:
+    items = [input_string]
+```
+
+### Parallel Processing with Limits
+```python
+def run_batch_workflow(items, token, max_workers=10):
+    """Run workflow for multiple items in parallel."""
+    actual_max_workers = min(max_workers, len(items))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=actual_max_workers) as executor:
+        future_to_item = {
+            executor.submit(process_item, item): item 
+            for item in items
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_item):
+            try:
+                result = future.result()
+                # Handle result
+            except Exception as e:
+                # Handle error gracefully
+                logging.error(f"❌ Error processing item: {e}")
+```
 
 ## Workflow Management
 
 ### Status Field Conventions
 ```python
-WORKFLOW_STEPS = {
-    "1 - Pending": {"script": "script_name.py", "next_status": "2 - Next Status"},
-    "2 - Processing": {"script": "script_name.py", "next_status": "3 - Complete"},
-    # Status format: "{number} - {description}"
-}
+WORKFLOW_STEPS = [
+    {
+        "step_num": 1,
+        "status_before": "0 - Pending File Info",
+        "status_after": "1 - File Info Complete",
+        "script": "stills_autolog_01_get_file_info.py",
+        "description": "Get File Info",
+        "conditional": False,  # Optional conditional execution
+        "timeout": 300  # Step-specific timeout
+    }
+]
 ```
 
-### Status Updates
+### Dynamic Status Handling with Retry Logic
 ```python
-def update_status(record_id, new_status):
-    payload = {"fieldData": {FIELD_MAPPING["status"]: new_status}}
-    return requests.patch(
-        config.url(f"layouts/Layout/records/{record_id}"),
-        headers=config.api_headers(token),
-        json=payload,
-        verify=False
-    )
-```
-
-## Parallel Processing Patterns
-
-### ThreadPoolExecutor Usage
-```python
-max_workers = min(10, len(records))  # Reasonable worker limits
-with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-    futures = [executor.submit(process_function, record) for record in records]
-    for future in concurrent.futures.as_completed(futures):
+def update_status(record_id, token, new_status, max_retries=3):
+    """Update status with retry logic and error handling."""
+    current_token = token
+    
+    for attempt in range(max_retries):
         try:
-            result = future.result()
-            # Handle result
-        except Exception as e:
-            # Handle error gracefully
+            payload = {"fieldData": {FIELD_MAPPING["status"]: new_status}}
+            response = requests.patch(
+                config.url(f"layouts/Stills/records/{record_id}"),
+                headers=config.api_headers(current_token),
+                json=payload,
+                verify=False,
+                timeout=30
+            )
+            
+            if response.status_code == 401:
+                current_token = config.get_token()
+                continue
+            
+            response.raise_for_status()
+            return True
+            
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+    
+    return False
 ```
-
-### Thread Safety
-- Use threading locks for shared resources
-- Handle FileMaker session management carefully in threaded contexts
-- Clean up resources in finally blocks or context managers
 
 ## Field Naming Conventions
 
@@ -163,84 +457,146 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
 - `AutoLog_Status` - Workflow status tracking
 - `AI_DevConsole` - User-visible error/debug messages
 
-### Local Variable Naming
-- Use descriptive names that match the field purpose
-- Prefer snake_case for local variables
-- Use clear field mapping keys in FIELD_MAPPING
+### Configuration Field Mapping
+```python
+FIELD_MAPPING = {
+    "item_id": "INFO_ITEM_ID",
+    "status": "AutoLog_Status",
+    "dev_console": "AI_DevConsole",
+    # Use descriptive local keys
+}
+```
 
-## Code Quality Standards
+## API Endpoint Patterns
 
-### Documentation
-- Include docstrings for main functions
-- Comment complex logic and FileMaker-specific operations
-- Document workflow step dependencies
+### Job Execution Endpoints
+```python
+@app.post("/run/{job}", dependencies=[Depends(check_key)])
+def run_job(job: str, background_tasks: BackgroundTasks, payload: dict = Body({})):
+    """Execute a job with tracking and background processing."""
+    # Validate job exists
+    # Parse arguments
+    # Submit for tracking
+    # Run in background
+    # Return job ID and status
+```
 
-### Error Logging
-- Log to console for system-level debugging
-- Log to FileMaker fields for user visibility
-- Include context (record IDs, step names) in error messages
-
-### Resource Management
-- Clean up temporary files in try/finally blocks
-- Use context managers for file operations
-- Close CV2 video captures explicitly
-
-### Performance
-- Use pagination for large FileMaker queries (limit: 500)
-- Process records in reasonable batches
-- Implement appropriate timeouts for external operations
+### Monitoring Endpoints
+```python
+@app.get("/status", dependencies=[Depends(check_key)])
+def get_status():
+    """Get current system status and job statistics."""
+    return job_tracker.get_stats()
+```
 
 ## Testing & Debugging Support
 
-### Controller Modes
-- Support polling mode for continuous operation
-- Support batch mode with specific record IDs for testing
-- Include debug output for workflow state monitoring
-
-### Debugging Output
+### Debug Mode Support
 ```python
-print(f"Processing {record_id} (Status: {current_status})")
-print(f"SUCCESS/FAILURE: {operation_description}")
+DEBUG_MODE = os.getenv('AUTOLOG_DEBUG', 'false').lower() == 'true'
+
+if DEBUG_MODE:
+    # Real-time output for debugging
+    result = subprocess.run(cmd, timeout=300)
+else:
+    # Captured output for production
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 ```
 
-## Legacy Code Conversion
+### Comprehensive Error Reporting
+```python
+# Show what's being stored in FileMaker
+print(f"  -> Writing error to FileMaker: {error_details[:200]}...")
 
-### When Converting Legacy Scripts
-1. Break monolithic scripts into individual job scripts
-2. Create corresponding controller for workflow management  
-3. Map existing status fields to new workflow steps
-4. Preserve existing functionality while improving error handling
-5. Add parallel processing where appropriate
-6. Migrate to config.py for FileMaker access
+# Provide full traceback for system errors
+except Exception as e:
+    print(f"  -> SYSTEM ERROR: {e}")
+    traceback.print_exc()  # Full traceback for debugging
+```
 
-### Maintain Backward Compatibility
-- Keep existing field names when possible
-- Preserve existing status values and transitions
-- Maintain existing API behavior for external integrations
+## Performance & Scalability
 
-## File Structure Requirements
+### Concurrency Management
+- API-level: Use FastAPI BackgroundTasks for job submission
+- Job-level: Use ThreadPoolExecutor with reasonable limits
+- Batch-level: Automatic discovery and parallel processing
 
-### Job Scripts Must Include
-- Shebang line: `#!/usr/bin/env python3`
-- Argument definition: `__ARGS__ = [...]`
-- Field mapping: `FIELD_MAPPING = {...}`
-- Main function with proper error handling
-- Command-line argument parsing
+### Resource Management
+```python
+# Proper cleanup patterns
+try:
+    # Processing logic
+    pass
+finally:
+    # Always clean up resources
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+```
 
-### Controllers Must Include  
-- Workflow step definitions
-- Error formatting functions
-- Parallel processing implementation
-- Both polling and batch mode support
-- Status-based workflow progression
+### Pagination and Batching
+```python
+# FileMaker queries with pagination
+query = {
+    "query": [search_criteria],
+    "limit": 100,  # Reasonable batch size for pending item discovery
+    "offset": offset
+}
+```
+
+## System Resilience Patterns
+
+### Automatic Recovery
+- Token refresh on 401 errors
+- Graceful degradation on partial failures
+- Retry mechanisms with exponential backoff
+- Continue processing on individual item failures
+
+### Fallback Strategies
+```python
+# Try primary approach first
+try:
+    result = primary_operation()
+except SpecificError:
+    # Fall back to alternative approach
+    result = fallback_operation()
+```
+
+### Health Monitoring
+```python
+# System health indicators
+def get_system_health():
+    return {
+        "jobs_submitted": job_tracker.jobs_submitted,
+        "jobs_completed": job_tracker.jobs_completed,
+        "currently_running": len(running_jobs)
+    }
+```
+
+## Development & Documentation Rules
+
+### README Updates
+- **ALWAYS update README.md when making architectural changes**
+- Update API endpoint examples when adding/removing endpoints
+- Update workflow descriptions when changing processing logic
+- Update configuration examples when modifying settings
+- Keep feature lists current with actual capabilities
+
+### Code Documentation
+- Add docstrings to all major functions
+- Document field mappings and their purposes
+- Explain complex retry logic and error handling
+- Comment on workflow state transitions
 
 ## Prohibited Patterns
 
-### Avoid These Anti-Patterns
-- Direct FileMaker API calls without using config.py
-- Hardcoded server URLs or credentials
-- Blocking operations without timeouts
-- Unhandled exceptions that crash the entire workflow
-- Missing SSL warning suppression
-- Processing large datasets without pagination
-- Thread-unsafe operations on shared resources 
+### Modern Anti-Patterns to Avoid
+- Missing timeout handling in subprocess operations
+- Inadequate error filtering for FileMaker storage
+- Thread-unsafe operations in concurrent contexts
+- Missing job tracking and monitoring
+- Hardcoded configuration values
+- Insufficient logging for debugging
+- Missing graceful shutdown handling
+- Poor error message formatting for users
+- Blocking operations that could cause workflow failures
+- Missing retry logic for network operations 

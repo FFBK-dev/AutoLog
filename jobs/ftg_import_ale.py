@@ -24,6 +24,7 @@ MATCH_FIELD    = "INFO_Filename"
 START_FIELD    = "SPECS_File_startTC"
 END_FIELD      = "SPECS_File_endTC"
 DUR_FIELD      = "SPECS_File_Duration_Timecode"      # ← NEW
+FPS_FIELD      = "SPECS_File_Framerate"              # ← NEW
 # ─────────────────────────────────────────────────────────
 
 def parse_ale(text: str):
@@ -48,6 +49,7 @@ def main(raw_text: str):
     st_col    = col("Start")
     end_col   = col("End")
     dur_col   = col("Duration")          # ← NEW
+    fps_col   = col("FPS")               # ← NEW
 
     tok, done, missing = cfg.get_token(), 0, 0
 
@@ -67,6 +69,7 @@ def main(raw_text: str):
             START_FIELD: r[st_col].strip(),
             END_FIELD  : r[end_col].strip(),
             DUR_FIELD  : r[dur_col].strip(),     # ← NEW
+            FPS_FIELD  : r[fps_col].strip(),     # ← NEW
         }
 
         try:

@@ -64,9 +64,23 @@ def find_url_from_source_and_archival_id(token, source, archival_id):
         return None
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2: sys.exit(1)
+    if len(sys.argv) < 2: 
+        sys.exit(1)
+    
     stills_id = sys.argv[1]
-    token = config.get_token()
+    
+    # Flexible token handling - detect call mode
+    if len(sys.argv) == 2:
+        # Direct API call mode - create own token/session
+        token = config.get_token()
+        print(f"Direct mode: Created new FileMaker session for {stills_id}")
+    elif len(sys.argv) == 3:
+        # Subprocess mode - use provided token from parent process
+        token = sys.argv[2]
+        print(f"Subprocess mode: Using provided token for {stills_id}")
+    else:
+        sys.stderr.write(f"ERROR: Invalid arguments. Expected: script.py stills_id [token]\n")
+        sys.exit(1)
     
     try:
         record_id = config.find_record_id(token, "Stills", {FIELD_MAPPING["stills_id"]: f"=={stills_id}"})
