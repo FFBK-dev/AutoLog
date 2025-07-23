@@ -30,6 +30,9 @@ FIELD_MAPPING = {
     "description": "INFO_Description",
     "date": "INFO_Date",
     "server_path": "SPECS_Filepath_Server",
+    "status": "AutoLog_Status",
+    "reviewed_checkbox": "INFO_Reviewed_Checkbox",
+    "dev_console": "AI_DevConsole",
     "globals_api_key_1": "SystemGlobals_AutoLog_OpenAI_API_Key_1",
     "globals_api_key_2": "SystemGlobals_AutoLog_OpenAI_API_Key_2",
     "globals_api_key_3": "SystemGlobals_AutoLog_OpenAI_API_Key_3",
@@ -221,25 +224,65 @@ def set_awaiting_user_input(token, record_id, stills_id, error_message):
         print(f"DEBUG: Failed to set 'Awaiting User Input' status: {e}")
         return False
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2: 
-        sys.exit(1)
+def update_status(record_id, token, new_status, max_retries=3):
+    """Update the AutoLog_Status field with retry logic."""
+    current_token = token
     
-    stills_id = sys.argv[1]
+    for attempt in range(max_retries):
+        try:
+            payload = {"fieldData": {FIELD_MAPPING["status"]: new_status}}
+            response = requests.patch(
+                config.url(f"layouts/Stills/records/{record_id}"), 
+                headers=config.api_headers(current_token), 
+                json=payload, 
+                verify=False,
+                timeout=30
+            )
+            
+            if response.status_code == 401:
+                print(f"  -> Token expired during status update, refreshing token (attempt {attempt + 1}/{max_retries})")
+                current_token = config.get_token()
+                continue
+            
+            response.raise_for_status()
+            return True
+            
+        except requests.exceptions.Timeout:
+            print(f"  -> Timeout updating status (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+                
+        except requests.exceptions.ConnectionError:
+            print(f"  -> Connection error updating status (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+                
+        except Exception as e:
+            print(f"  -> Error updating status (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
     
-    # Support both old (2 args) and new (3 args) calling patterns
-    if len(sys.argv) == 2:
-        # Direct API call mode - create own token/session
-        token = config.get_token()
-    elif len(sys.argv) == 3:
-        # Subprocess mode - use provided token from parent process
-        token = sys.argv[2]
-    else:
-        sys.exit(1)
-    
+    print(f"  -> Failed to update status to '{new_status}' after {max_retries} attempts")
+    return False
+
+
+
+def process_single_item(stills_id, token, continue_workflow=False):
+    """Process a single stills_id through step 05 and optionally continue."""
     try:
         record_id = config.find_record_id(token, "Stills", {FIELD_MAPPING["stills_id"]: f"=={stills_id}"})
         record_data = config.get_record(token, "Stills", record_id)
+        
+        # Update status to step 05 before processing (when called as individual endpoint)
+        if continue_workflow:
+            print(f"  -> Updating status to: 5 - Generating Description (before running step 05)")
+            if not update_status(record_id, token, "5 - Generating Description"):
+                print(f"  -> WARNING: Failed to update status to '5 - Generating Description', but continuing workflow")
+            else:
+                print(f"  -> Status updated successfully")
         
         metadata_from_fm = record_data.get(FIELD_MAPPING["metadata"], '')
         user_prompt = record_data.get(FIELD_MAPPING["user_prompt"], '')
@@ -277,9 +320,7 @@ if __name__ == "__main__":
         
         print(f"DEBUG: Making OpenAI API call for stills_id: {stills_id}")
         
-        # Try queue system first, fall back to direct API
-        content = None
-        
+        # Process OpenAI request
         content = process_openai_request(stills_id, messages, record_id, token)
         
         print(f"DEBUG: Parsed OpenAI response content: {content}")
@@ -293,21 +334,135 @@ if __name__ == "__main__":
         
         config.update_record(token, "Stills", record_id, update_data)
         
-        # Commit the record to ensure calculation fields update properly
-        print(f"DEBUG: Record updated successfully, calculation fields should update automatically")
+        print(f"DEBUG: Record updated successfully for {stills_id}")
         
-        print(f"SUCCESS [generate_description]: {stills_id}")
-        sys.exit(0)
+        # Set final status when called as individual endpoint
+        if continue_workflow:
+            print(f"=== Setting final status for {stills_id} ===")
+            if update_status(record_id, token, "6 - Generating Embeddings"):
+                print(f"SUCCESS [generate_description + final status]: {stills_id}")
+                return True
+            else:
+                print(f"PARTIAL SUCCESS [generate_description only]: {stills_id}")
+                return True  # Description generation succeeded even if status update failed
+        else:
+            print(f"SUCCESS [generate_description]: {stills_id}")
+            return True
 
     except Exception as e:
         # For any other unexpected errors, try to set "Awaiting User Input" before failing
-        print(f"DEBUG: Unexpected error in generate_description: {e}")
+        print(f"DEBUG: Unexpected error in generate_description for {stills_id}: {e}")
         try:
             if set_awaiting_user_input(token, record_id, stills_id, f"Unexpected error: {str(e)}"):
                 print(f"HANDLED [generate_description]: {stills_id} - Set to 'Awaiting User Input' due to unexpected error")
-                sys.exit(0)
+                return True
         except:
             pass  # If we can't set the status, continue with normal error handling
         
-        sys.stderr.write(f"ERROR [generate_description] on {stills_id}: {e}\n")
-        sys.exit(1) 
+        print(f"ERROR [generate_description] on {stills_id}: {e}")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2: 
+        sys.exit(1)
+    
+    input_string = sys.argv[1]
+    
+    # Support both old (2 args) and new (3 args) calling patterns
+    if len(sys.argv) == 2:
+        # Direct API call mode - create own token/session and set final status
+        token = config.get_token()
+        continue_workflow = True  # When called as individual endpoint, set status to "6 - Generating Embeddings"
+    elif len(sys.argv) == 3:
+        # Subprocess mode - use provided token from parent process, don't set final status
+        token = sys.argv[2]
+        continue_workflow = False  # When called as part of main workflow, don't set final status
+    else:
+        sys.exit(1)
+    
+    # Parse input - support multiple formats
+    try:
+        # First try JSON parsing
+        parsed_ids = json.loads(input_string)
+        if isinstance(parsed_ids, list):
+            stills_ids = [str(id).strip() for id in parsed_ids]
+        else:
+            stills_ids = [str(parsed_ids).strip()]
+    except json.JSONDecodeError:
+        # Try comma-separated values
+        if ',' in input_string:
+            stills_ids = [id.strip() for id in input_string.split(',') if id.strip()]
+        # Try line-separated values (newlines or carriage returns)
+        elif '\n' in input_string or '\r' in input_string:
+            # Handle both \n and \r\n and \r
+            cleaned_input = input_string.replace('\r\n', '\n').replace('\r', '\n')
+            stills_ids = [id.strip() for id in cleaned_input.split('\n') if id.strip()]
+        # Try space-separated values
+        elif ' ' in input_string and not input_string.startswith('S') or len(input_string.split()) > 1:
+            stills_ids = [id.strip() for id in input_string.split() if id.strip()]
+        else:
+            # Single ID as string
+            stills_ids = [input_string.strip()]
+    
+    # Filter out empty strings
+    stills_ids = [id for id in stills_ids if id]
+    
+    print(f"🚀 Starting generate_description for {len(stills_ids)} item(s)")
+    if len(stills_ids) > 1:
+        print(f"📋 Parsed IDs: {stills_ids[:5]}{'...' if len(stills_ids) > 5 else ''}")
+    else:
+        print(f"📋 Processing single ID: {stills_ids[0]}")
+    if continue_workflow:
+        print(f"🔄 Individual endpoint mode - will set final status to '6 - Generating Embeddings'")
+    else:
+        print(f"📋 Subprocess mode - step 05 only")
+    
+    # Process items
+    if len(stills_ids) == 1:
+        # Single item
+        stills_id = stills_ids[0]
+        success = process_single_item(stills_id, token, continue_workflow)
+        sys.exit(0 if success else 1)
+    else:
+        # Multiple items - process in parallel
+        successful = 0
+        failed = 0
+        
+        def process_item_wrapper(stills_id):
+            try:
+                return process_single_item(stills_id, token, continue_workflow)
+            except Exception as e:
+                print(f"ERROR processing {stills_id}: {e}")
+                return False
+        
+        # Use ThreadPoolExecutor for parallel processing
+        max_workers = min(8, len(stills_ids))  # Reasonable concurrency limit
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_stills_id = {
+                executor.submit(process_item_wrapper, stills_id): stills_id 
+                for stills_id in stills_ids
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_stills_id):
+                stills_id = future_to_stills_id[future]
+                try:
+                    success = future.result()
+                    if success:
+                        successful += 1
+                        print(f"✅ Completed: {stills_id}")
+                    else:
+                        failed += 1
+                        print(f"❌ Failed: {stills_id}")
+                except Exception as e:
+                    failed += 1
+                    print(f"❌ Exception processing {stills_id}: {e}")
+        
+        # Print summary
+        total = len(stills_ids)
+        print(f"=== Batch generate_description completed ===")
+        print(f"Total: {total}, Successful: {successful}, Failed: {failed}")
+        print(f"Success rate: {(successful / total * 100):.1f}%")
+        
+        # Exit with success if all items succeeded
+        sys.exit(0 if failed == 0 else 1) 

@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+import sys, os, subprocess, tempfile
+import warnings
+from pathlib import Path
+import requests
+
+# Suppress urllib3 LibreSSL warning
+warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
+
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import config
+
+__ARGS__ = ["footage_id"]
+
+FIELD_MAPPING = {
+    "footage_id": "INFO_FTG_ID",
+    "filepath": "SPECS_Filepath_Server",
+    "thumbnail": "SPECS_Thumbnail"
+}
+
+def generate_footage_thumbnail(file_path, output_path, timecode="00:00:05"):
+    """Generate a thumbnail for the footage at specified timecode."""
+    print(f"  -> Generating footage thumbnail from: {file_path}")
+    
+    try:
+        # Find ffmpeg
+        ffmpeg_paths = ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg']
+        ffmpeg_cmd = None
+        
+        for path in ffmpeg_paths:
+            if os.path.exists(path) or path == 'ffmpeg':
+                ffmpeg_cmd = path
+                break
+        
+        if not ffmpeg_cmd:
+            raise RuntimeError("FFmpeg not found in any expected location")
+        
+        # Generate thumbnail command
+        cmd = [
+            ffmpeg_cmd,
+            '-y',  # Overwrite output file
+            '-ss', timecode,  # Seek to timecode
+            '-i', file_path,  # Input file
+            '-frames:v', '1',  # Extract one frame
+            '-q:v', '2',  # High quality
+            '-vf', 'scale=640:360',  # Scale to reasonable size
+            output_path,  # Output file
+            '-loglevel', 'quiet'  # Suppress output
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        if result.returncode != 0:
+            print(f"  -> FFmpeg error: {result.stderr}")
+            return False
+        
+        # Check if thumbnail was created
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            print(f"  -> Thumbnail generated successfully: {output_path}")
+            return True
+        else:
+            print(f"  -> Thumbnail file not created or empty")
+            return False
+        
+    except subprocess.TimeoutExpired:
+        print(f"  -> FFmpeg timed out")
+        return False
+    except Exception as e:
+        print(f"  -> Error generating thumbnail: {e}")
+        return False
+
+def upload_thumbnail_to_filemaker(token, layout, record_id, field_name, file_path, filename):
+    """Upload thumbnail to FileMaker container field."""
+    print(f"  -> Uploading thumbnail to FileMaker: {filename}")
+    
+    try:
+        # Construct upload URL
+        # Format: /layouts/{layout}/records/{recordId}/containers/{fieldName}/{repetition}
+        upload_url = f"https://10.0.222.144/fmi/data/vLatest/databases/Emancipation%20to%20Exodus/layouts/{layout}/records/{record_id}/containers/{field_name}/1"
+        
+        # Prepare file for upload
+        with open(file_path, 'rb') as f:
+            files = {"upload": (filename, f, "image/jpeg")}
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            response = requests.post(
+                upload_url,
+                headers=headers,
+                files=files,
+                verify=False,
+                timeout=60
+            )
+        
+        if response.status_code == 200:
+            print(f"  -> Thumbnail uploaded successfully")
+            return True
+        else:
+            print(f"  -> Upload failed: {response.status_code}")
+            print(f"  -> Response: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"  -> Error uploading thumbnail: {e}")
+        return False
+
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    footage_id = sys.argv[1]
+    
+    # Flexible token handling
+    if len(sys.argv) == 2:
+        token = config.get_token()
+        print(f"Direct mode: Created new FileMaker session for {footage_id}")
+    elif len(sys.argv) == 3:
+        token = sys.argv[2]
+        print(f"Subprocess mode: Using provided token for {footage_id}")
+    else:
+        sys.stderr.write(f"ERROR: Invalid arguments. Expected: script.py footage_id [token]\n")
+        sys.exit(1)
+    
+    try:
+        print(f"Starting thumbnail generation for footage {footage_id}")
+        
+        # Get the current record to find the file path
+        record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
+        record_data = config.get_record(token, "FOOTAGE", record_id)
+        file_path = record_data[FIELD_MAPPING["filepath"]]
+        
+        print(f"Processing file: {file_path}")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Footage file not found: {file_path}")
+        
+        # Generate footage-level thumbnail
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+            temp_thumbnail_path = temp_file.name
+        
+        try:
+            if generate_footage_thumbnail(file_path, temp_thumbnail_path):
+                # Upload thumbnail to FileMaker
+                thumbnail_filename = f"thumbnail_{footage_id}.jpg"
+                
+                if upload_thumbnail_to_filemaker(
+                    token, 
+                    "FOOTAGE", 
+                    record_id, 
+                    FIELD_MAPPING["thumbnail"],  # Use full field name for container field
+                    temp_thumbnail_path, 
+                    thumbnail_filename
+                ):
+                    print(f"✅ Footage thumbnail generated and uploaded for {footage_id}")
+                else:
+                    print(f"❌ Failed to upload footage thumbnail")
+                    sys.exit(1)
+            else:
+                print(f"❌ Failed to generate footage thumbnail")
+                sys.exit(1)
+                
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_thumbnail_path):
+                os.remove(temp_thumbnail_path)
+        
+        print(f"✅ Footage thumbnail generation completed for {footage_id}")
+        print(f"   Frame thumbnail triggering will be handled client-side")
+        
+    except Exception as e:
+        print(f"❌ Error processing footage {footage_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1) 

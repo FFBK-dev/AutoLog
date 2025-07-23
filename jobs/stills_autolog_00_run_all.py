@@ -38,6 +38,7 @@ FIELD_MAPPING = {
     "copyright": "INFO_Copyright",
     "source": "INFO_Source",
     "archival_id": "INFO_Archival_ID",
+    "reviewed_checkbox": "INFO_Reviewed_Checkbox",
     "globals_api_key_1": "SystemGlobals_AutoLog_OpenAI_API_Key_1",
     "globals_api_key_2": "SystemGlobals_AutoLog_OpenAI_API_Key_2",
     "globals_api_key_3": "SystemGlobals_AutoLog_OpenAI_API_Key_3",
@@ -46,6 +47,7 @@ FIELD_MAPPING = {
 }
 
 # Define the complete workflow with status updates
+# Modified to stop after step 5 and set status to "6 - Generating Embeddings"
 WORKFLOW_STEPS = [
     {
         "step_num": 1,
@@ -80,30 +82,10 @@ WORKFLOW_STEPS = [
     {
         "step_num": 5,
         "status_before": None,  # Variable - could be step 3 or 4 status
-        "status_after": "5 - Generating Description",
+        "status_after": "5 - Generating Description",  # Status while working
         "script": "stills_autolog_05_generate_description.py",
-        "description": "Generate Description"
-    },
-    {
-        "step_num": 6,
-        "status_before": "5 - Generating Description",
-        "status_after": "6 - Generating Embeddings",
-        "script": "stills_autolog_06_generate_embeddings.py",
-        "description": "Generate Embeddings"
-    },
-    {
-        "step_num": 7,
-        "status_before": "6 - Generating Embeddings",
-        "status_after": "7 - Applying Tags",
-        "script": "stills_autolog_07_apply_tags.py",
-        "description": "Apply Tags"
-    },
-    {
-        "step_num": 8,
-        "status_before": "7 - Applying Tags",
-        "status_after": "9 - Complete",
-        "script": "stills_autolog_08_fuse_embeddings.py",
-        "description": "Fuse Embeddings"
+        "description": "Generate Description",
+        "final_status": "6 - Generating Embeddings"  # Status after completion
     }
 ]
 
@@ -149,8 +131,8 @@ def combine_metadata(record_data):
     
     return "\n\n".join(metadata_parts)
 
-def evaluate_metadata_quality(record_data, token):
-    """Evaluate metadata quality using local analysis."""
+def evaluate_metadata_quality(record_data, token, has_url=False):
+    """Evaluate metadata quality using local analysis with URL-aware thresholds."""
     try:
         # Combine all metadata
         combined_metadata = combine_metadata(record_data)
@@ -159,10 +141,11 @@ def evaluate_metadata_quality(record_data, token):
             print(f"  -> No metadata available for evaluation")
             return False
         
-        print(f"  -> Evaluating combined metadata ({len(combined_metadata)} chars)")
+        url_context = "with URL available" if has_url else "without URL"
+        print(f"  -> Evaluating combined metadata ({len(combined_metadata)} chars) {url_context}")
         
-        # Use local evaluator instead of OpenAI
-        evaluation = evaluate_metadata_local(combined_metadata)
+        # Use local evaluator with URL awareness
+        evaluation = evaluate_metadata_local(combined_metadata, has_url)
         
         is_sufficient = evaluation.get("sufficient", False)
         reason = evaluation.get("reason", "No reason provided")
@@ -181,13 +164,15 @@ def evaluate_metadata_quality(record_data, token):
         # Fall back to basic heuristics if local evaluation fails
         combined_metadata = combine_metadata(record_data)
         
-        # More lenient fallback: check for minimum length and any basic content
-        # Historical photos often have minimal metadata, so be more forgiving
-        if len(combined_metadata) > 50:  # Lowered from 100 to 50
-            print(f"  -> Fallback: Using basic length check - GOOD (historical photos often have minimal metadata)")
+        # URL-aware fallback thresholds
+        fallback_threshold = 100 if has_url else 50
+        fallback_context = "stricter fallback (URL available)" if has_url else "lenient fallback (no URL)"
+        
+        if len(combined_metadata) > fallback_threshold:
+            print(f"  -> Fallback: Using basic length check - GOOD ({fallback_context})")
             return True
         else:
-            print(f"  -> Fallback: Using basic length check - BAD (truly insufficient metadata)")
+            print(f"  -> Fallback: Using basic length check - BAD ({fallback_context})")
             return False
 
 def format_error_message(stills_id, step_name, error_details, error_type="Processing Error"):
@@ -359,6 +344,7 @@ def run_workflow_step(step, stills_id, record_id, token):
     step_num = step["step_num"]
     script_name = step["script"]
     description = step["description"]
+    is_final_step = (step["status_after"] == "9 - Complete")
     
     print(f"--- Step {step_num}: {description} ---")
     print(f"  -> Processing stills_id: {stills_id}")
@@ -376,53 +362,95 @@ def run_workflow_step(step, stills_id, record_id, token):
         else:
             print(f"  -> WARNING: Could not get record data for status check")
             print(f"  -> Assuming status is valid and proceeding with step 5")
-        # Don't update status before step 5 - use whatever the current status is
+        # For step 5, update to the "after" status BEFORE running (unless it's the final step)
+        if not is_final_step and step.get("status_after"):
+            print(f"  -> Updating status to: {step['status_after']} (before running step)")
+            if not update_status(record_id, token, step["status_after"]):
+                print(f"  -> WARNING: Failed to update status to '{step['status_after']}', but continuing workflow")
+            else:
+                print(f"  -> Status updated successfully")
+    # Handle dynamic status checking for step 8 (could come from step 6 or 7)
+    elif step_num == 8 and step.get("status_before") is None:
+        # Get current record data to check actual status
+        record_data, token = get_current_record_data(record_id, token)
+        if record_data:
+            current_status = record_data['fieldData'].get(FIELD_MAPPING["status"], '')
+            print(f"  -> Current status: {current_status}")
+            # Step 8 can proceed from either "6 - Generating Embeddings" (if step 7 skipped) or "7 - Applying Tags"
+            if current_status not in ["6 - Generating Embeddings", "7 - Applying Tags"]:
+                print(f"  -> WARNING: Unexpected status '{current_status}' for step 8")
+        else:
+            print(f"  -> WARNING: Could not get record data for status check")
+            print(f"  -> Assuming status is valid and proceeding with step 8")
+        # For step 8 (final step), we'll update after the script runs (handled later)
+        if is_final_step:
+            print(f"  -> Final step - will update to '{step['status_after']}' after completion")
     else:
-        # Update status before running step (if specified)
-        if step.get("status_before"):
-            print(f"  -> Updating status to: {step['status_before']}")
-            if not update_status(record_id, token, step["status_before"]):
-                print(f"  -> WARNING: Failed to update status to '{step['status_before']}', but continuing workflow")
+        # For non-final steps, update to the "after" status BEFORE running the script
+        if not is_final_step and step.get("status_after"):
+            print(f"  -> Updating status to: {step['status_after']} (before running step)")
+            if not update_status(record_id, token, step["status_after"]):
+                print(f"  -> WARNING: Failed to update status to '{step['status_after']}', but continuing workflow")
                 # Don't return False - continue with the step even if status update fails
             else:
                 print(f"  -> Status updated successfully")
+        # For the final step, we'll update after the script runs (handled later)
+        elif is_final_step:
+            print(f"  -> Final step - will update to '{step['status_after']}' after completion")
     
-    # Handle conditional steps with metadata evaluation
-    if step.get("conditional") and step.get("evaluate_metadata_first"):
-        print(f"  -> Evaluating metadata quality for conditional step")
-        # Get current record data to check metadata quality
+    # Handle conditional steps with reviewed checkbox check
+    if step.get("conditional") and step.get("check_reviewed_flag"):
+        print(f"  -> Checking INFO_Reviewed_Checkbox for conditional tag application")
+        # Get current record data to check reviewed status
         record_data, token = get_current_record_data(record_id, token)
         if not record_data:
             print(f"  -> WARNING: Could not get record data for {stills_id}")
-            print(f"  -> Assuming metadata is BAD and attempting to continue workflow")
-            # If we can't get record data, assume metadata is bad and try to continue
-            # This prevents the workflow from stopping due to temporary API issues
-            print(f"  -> Continuing to step 5 (AI can work with whatever metadata exists)")
+            print(f"  -> Assuming reviewed checkbox = 0 and skipping tag application")
             return True
         
-        # Evaluate metadata quality first
-        metadata_quality_good = evaluate_metadata_quality(record_data['fieldData'], token)
+        # Check reviewed checkbox value
+        reviewed_checkbox = record_data['fieldData'].get(FIELD_MAPPING["reviewed_checkbox"], '')
+        print(f"  -> INFO_Reviewed_Checkbox value: '{reviewed_checkbox}'")
         
-        if metadata_quality_good:
-            print(f"  -> SKIP: Metadata quality is GOOD, URL scraping not needed for {stills_id}")
-            # Skip URL scraping - don't update status, keep current status so step 5 can proceed
+        # Skip ONLY if reviewed_checkbox is explicitly 0 (unchecked)
+        # Empty/missing checkbox should proceed with typical flow
+        if str(reviewed_checkbox) == '0' or reviewed_checkbox == 0:
+            print(f"  -> SKIP: INFO_Reviewed_Checkbox = 0, tag application not needed for {stills_id}")
+            # Keep current status (6 - Generating Embeddings) and let step 8 proceed
             current_status = record_data['fieldData'].get(FIELD_MAPPING['status'], 'Unknown')
-            print(f"  -> Status remains: {current_status} (URL scraping skipped)")
+            print(f"  -> Status remains: {current_status} (tag application skipped)")
             return True
         else:
-            print(f"  -> Metadata quality is BAD, checking if URL scraping is possible for {stills_id}")
-            # Check if URL exists before proceeding
-            url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
-            if not url:
-                print(f"  -> SKIP: No URL found for scraping, but continuing workflow anyway for {stills_id}")
-                print(f"  -> AI can still generate descriptions from available metadata")
-                # Keep current status (3 - Metadata Parsed) and let step 5 proceed
-                current_status = record_data['fieldData'].get(FIELD_MAPPING['status'], 'Unknown')
-                print(f"  -> Status remains: {current_status} (URL scraping skipped, continuing workflow)")
-                return True
-            else:
-                print(f"  -> URL found for {stills_id}: {url}")
-                # Continue with URL scraping - the script will run normally below
+            # Proceed with tag application for checkbox = 1 or empty/missing
+            checkbox_status = "1 (checked)" if str(reviewed_checkbox) == '1' else "empty (proceeding with typical flow)"
+            print(f"  -> INFO_Reviewed_Checkbox = {checkbox_status}, proceeding with tag application for {stills_id}")
+            # Continue with tag application - the script will run normally below
+    
+    # Handle conditional steps with metadata evaluation (URL-aware)
+    elif step.get("conditional") and step.get("evaluate_metadata_first"):
+        print(f"  -> Checking URL availability for conditional step")
+        # Get current record data to check URL availability
+        record_data, token = get_current_record_data(record_id, token)
+        if not record_data:
+            print(f"  -> WARNING: Could not get record data for {stills_id}")
+            print(f"  -> Assuming no URL and continuing workflow")
+            return True
+        
+        # Check URL availability FIRST
+        url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
+        has_url = bool(url and url.strip())
+        
+        if has_url:
+            print(f"  -> URL found for {stills_id}: {url}")
+            print(f"  -> Proceeding with URL scraping (always run when URL is available)")
+            # Always run URL scraping when URL is available - let the script handle content evaluation
+        else:
+            print(f"  -> No URL found for {stills_id}")
+            print(f"  -> Skipping URL scraping (no URL available)")
+            # Skip URL scraping when no URL is available
+            current_status = record_data['fieldData'].get(FIELD_MAPPING['status'], 'Unknown')
+            print(f"  -> Status remains: {current_status} (URL scraping skipped, continuing workflow)")
+            return True
     
     # Handle other conditional steps (legacy)
     elif step.get("conditional"):
@@ -453,8 +481,8 @@ def run_workflow_step(step, stills_id, record_id, token):
             print(f"  -> AI can work with whatever metadata exists")
             return True
         
-        # Evaluate metadata quality inline
-        if not evaluate_metadata_quality(record_data['fieldData'], token):
+        # Evaluate metadata quality inline (legacy mode - use lenient threshold)
+        if not evaluate_metadata_quality(record_data['fieldData'], token, has_url=False):
             print(f"  -> HALT: Metadata quality is BAD for {stills_id}, not 'GOOD'")
             # Set status to awaiting user input
             if not update_status(record_id, token, "Awaiting User Input"):
@@ -480,6 +508,9 @@ def run_workflow_step(step, stills_id, record_id, token):
     try:
         print(f"  -> Running script: {script_name} for {stills_id}")
         
+        # Show subprocess initiation message for console tracking
+        print(f"🔄 Initiating subprocess: {description} (Step {step_num}) on ID {stills_id}")
+        
         # In debug mode, show output in real-time
         if DEBUG_MODE:
             print(f"  -> DEBUG MODE: Running subprocess with real-time output")
@@ -490,16 +521,26 @@ def run_workflow_step(step, stills_id, record_id, token):
             # In debug mode, just check return code
             success = result.returncode == 0
             if success:
+                print(f"✅ Subprocess completed: {description} (Step {step_num}) on ID {stills_id}")
                 print(f"  -> SUCCESS: {script_name} completed for {stills_id}")
-                # Update status after successful completion (only if status_after is not None)
-                if step["status_after"] is not None:
-                    print(f"  -> Updating status to: {step['status_after']}")
+                # Handle final status update for step 5 (final step in new workflow)
+                if step_num == 5 and step.get("final_status"):
+                    print(f"  -> Updating final status to: {step['final_status']}")
+                    if not update_status(record_id, token, step["final_status"]):
+                        print(f"  -> WARNING: Failed to update status to '{step['final_status']}', but step completed successfully")
+                    else:
+                        print(f"  -> Status updated successfully")
+                elif is_final_step and step["status_after"] is not None:
+                    print(f"  -> Updating final status to: {step['status_after']}")
                     if not update_status(record_id, token, step["status_after"]):
                         print(f"  -> WARNING: Failed to update status to '{step['status_after']}', but step completed successfully")
                     else:
                         print(f"  -> Status updated successfully")
+                elif not is_final_step:
+                    print(f"  -> Status already updated before step execution")
                 return True
             else:
+                print(f"❌ Subprocess failed: {description} (Step {step_num}) on ID {stills_id}")
                 print(f"  -> FAILURE: {script_name} failed with exit code {result.returncode} for {stills_id}")
                 error_msg = format_error_message(
                     stills_id,
@@ -520,18 +561,28 @@ def run_workflow_step(step, stills_id, record_id, token):
             )
         
         if result.returncode == 0:
+            print(f"✅ Subprocess completed: {description} (Step {step_num}) on ID {stills_id}")
             print(f"  -> SUCCESS: {script_name} completed for {stills_id}")
             
-            # Update status after successful completion (only if status_after is not None)
-            if step["status_after"] is not None:
-                print(f"  -> Updating status to: {step['status_after']}")
+            # Handle final status update for step 5 (final step in new workflow)
+            if step_num == 5 and step.get("final_status"):
+                print(f"  -> Updating final status to: {step['final_status']}")
+                if not update_status(record_id, token, step["final_status"]):
+                    print(f"  -> WARNING: Failed to update status to '{step['final_status']}', but step completed successfully")
+                else:
+                    print(f"  -> Status updated successfully")
+            elif is_final_step and step["status_after"] is not None:
+                print(f"  -> Updating final status to: {step['status_after']}")
                 if not update_status(record_id, token, step["status_after"]):
                     print(f"  -> WARNING: Failed to update status to '{step['status_after']}', but step completed successfully")
                 else:
                     print(f"  -> Status updated successfully")
+            elif not is_final_step:
+                print(f"  -> Status already updated before step execution")
             
             return True
         else:
+            print(f"❌ Subprocess failed: {description} (Step {step_num}) on ID {stills_id}")
             print(f"  -> FAILURE: {script_name} failed with exit code {result.returncode} for {stills_id}")
             print(f"  -> RAW STDERR OUTPUT:")
             if result.stderr:
@@ -656,12 +707,7 @@ def run_complete_workflow_with_record_id(stills_id, record_id, token):
                 time.sleep(0.02)  # Reduced from 0.05s to 0.02s
             # Most operations are immediate - no delay needed
         
-        # Mark as complete
-        if not update_status(record_id, token, "9 - Complete"):
-            print(f"  -> Warning: Failed to update final status to 'Complete'")
-        else:
-            print(f"  -> Final status updated to: 9 - Complete")
-        
+        # Final status update is now handled in the last workflow step
         total_duration = time.time() - workflow_start_time
         print(f"=== Workflow COMPLETED successfully for {stills_id} in {total_duration:.2f} seconds ===")
         return True
@@ -738,12 +784,7 @@ def run_complete_workflow(stills_id, token):
                 time.sleep(0.02)  # Reduced from 0.05s to 0.02s
             # All other operations are immediate - no delay needed
         
-        # Mark as complete
-        if not update_status(record_id, token, "9 - Complete"):
-            print(f"  -> Warning: Failed to update final status to 'Complete'")
-        else:
-            print(f"  -> Final status updated to: 9 - Complete")
-        
+        # Final status update is now handled in the last workflow step
         total_duration = time.time() - workflow_start_time
         print(f"=== Workflow COMPLETED successfully for {stills_id} in {total_duration:.2f} seconds ===")
         return True

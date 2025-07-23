@@ -58,9 +58,10 @@ class LocalMetadataEvaluator:
             'authentic', 'provenance', 'attribution', 'creator', 'photographer', 'artist'
         }
 
-    def evaluate_metadata(self, text: str) -> Dict[str, any]:
+    def evaluate_metadata(self, text: str, has_url: bool = False) -> Dict[str, any]:
         """
         Evaluate metadata quality using local analysis.
+        Uses different thresholds based on whether URL scraping is possible.
         Returns dict with 'sufficient' (bool), 'reason' (str), 'confidence' (str), 'score' (float)
         """
         if not text or not text.strip():
@@ -156,8 +157,17 @@ class LocalMetadataEvaluator:
         # Cap score at 1.0
         score = min(score, 1.0)
         
-        # Determine sufficiency
-        sufficient = score >= 0.3  # Lowered from 0.5 to 0.3 for more lenient evaluation of historical photos
+        # Determine sufficiency with URL-aware thresholds
+        if has_url:
+            # Stricter threshold when URL exists (we can improve metadata)
+            threshold = 0.5
+            context = "URL available - using stricter threshold"
+        else:
+            # More lenient threshold when no URL (can't improve metadata anyway)
+            threshold = 0.3
+            context = "No URL available - using lenient threshold"
+        
+        sufficient = score >= threshold
         
         # Determine confidence
         if score >= 0.6:  # Lowered from 0.8
@@ -169,9 +179,9 @@ class LocalMetadataEvaluator:
         
         # Generate reason
         if sufficient:
-            reason = f"Good quality metadata (score: {score:.2f}). " + "; ".join(reasons)
+            reason = f"Good quality metadata (score: {score:.2f}, threshold: {threshold:.1f}). {context}. " + "; ".join(reasons)
         else:
-            reason = f"Insufficient metadata quality (score: {score:.2f}). " + "; ".join(reasons)
+            reason = f"Insufficient metadata quality (score: {score:.2f}, threshold: {threshold:.1f}). {context}. " + "; ".join(reasons)
         
         return {
             'sufficient': sufficient,
@@ -181,7 +191,7 @@ class LocalMetadataEvaluator:
         }
 
 def test_evaluator():
-    """Test the evaluator with sample texts."""
+    """Test the evaluator with sample texts and different URL scenarios."""
     evaluator = LocalMetadataEvaluator()
     
     test_cases = [
@@ -194,18 +204,25 @@ def test_evaluator():
     ]
     
     for i, text in enumerate(test_cases, 1):
-        result = evaluator.evaluate_metadata(text)
-        print(f"Test {i}: {'✅ SUFFICIENT' if result['sufficient'] else '❌ INSUFFICIENT'}")
-        print(f"  Score: {result['score']:.2f}")
-        print(f"  Reason: {result['reason']}")
+        print(f"Test {i}: {text[:50]}...")
+        
+        # Test with URL available (stricter threshold)
+        result_with_url = evaluator.evaluate_metadata(text, has_url=True)
+        print(f"  With URL: {'✅ SUFFICIENT' if result_with_url['sufficient'] else '❌ INSUFFICIENT'}")
+        print(f"    Score: {result_with_url['score']:.2f}, Reason: {result_with_url['reason']}")
+        
+        # Test without URL (lenient threshold)
+        result_no_url = evaluator.evaluate_metadata(text, has_url=False)
+        print(f"  No URL:  {'✅ SUFFICIENT' if result_no_url['sufficient'] else '❌ INSUFFICIENT'}")
+        print(f"    Score: {result_no_url['score']:.2f}, Reason: {result_no_url['reason']}")
         print()
 
 # Global instance
 _evaluator = LocalMetadataEvaluator()
 
-def evaluate_metadata_local(text: str) -> Dict[str, any]:
+def evaluate_metadata_local(text: str, has_url: bool = False) -> Dict[str, any]:
     """Main function for metadata evaluation - matches OpenAI API format."""
-    return _evaluator.evaluate_metadata(text)
+    return _evaluator.evaluate_metadata(text, has_url)
 
 if __name__ == "__main__":
     test_evaluator() 

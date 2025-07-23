@@ -4,7 +4,7 @@ The context is a database entry for a documentary production about the American 
 
 {AI_Prompt}
 
-Keep the description to 2 sentences MAXIMUM. Always include the date the image was taken as the last sentence. If there is no date provided, estimate a decade. Use Circa when estimating. Stay away from starting phrases like "This image is" or "The estimated date is". Avoid using unnecessary adjectives or editorial descriptions of the historical period.
+Keep the description to 2 sentences MAXIMUM please. Always include the date the image was taken as the last sentence. If there is no date provided, estimate a decade. Use Circa when estimating. Stay away from starting phrases like "This image is" or "The estimated date is". Avoid using unnecessary adjectives or editorial descriptions of the historical period.
 
 For the description, use natural date formatting like "January 1, 2020" or "Circa 2020" or "Circa January 2020" if only partial information is known.
 

@@ -74,7 +74,10 @@ if __name__ == "__main__":
         description = safe_get(metadata, 'IPTC:Caption-Abstract')
         copyright_notice = safe_get(metadata, 'IPTC:CopyrightNotice')
         byline = safe_get(metadata, 'IPTC:By-line')
-        exif_url = safe_get(metadata, 'XMP:CreatorAddress')
+        exif_url = safe_get(metadata, 'XMP-iptcCore:CreatorAddress')
+        if not exif_url:
+            # Try alternative field names
+            exif_url = safe_get(metadata, 'XMP-iptcCore', {}).get('CreatorAddress', '')
         date_created = safe_get(metadata, 'IPTC:DateCreated', '').replace(':', '/')
         copyright_final = copyright_notice if copyright_notice else byline
         filename = Path(import_path).stem
