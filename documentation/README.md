@@ -210,6 +210,7 @@ The system uses an advanced **URL-aware metadata evaluation** approach that opti
 The system now includes a comprehensive URL scraping utility that provides:
 
 #### **Website Type Detection & Specialized Handling**
+- **Temple University Digital Library** - Specialized extraction for Blockson Collection and digital archives
 - **CONTENTdm Sites** - Extracts rich metadata from JavaScript JSON data
 - **Library of Congress** - Specialized parsing for LOC.gov
 - **New York Public Library** - Enhanced NYPL.org extraction
@@ -228,6 +229,11 @@ The system now includes a comprehensive URL scraping utility that provides:
 - **Metadata Quality Evaluation** - Advanced scoring system
 - **Robust Error Handling** - Graceful degradation on failures
 - **Retry Logic** - Automatic retry with exponential backoff
+
+#### **Documentation & Development Guides**
+- **📖 [URL Scraping Enhancement Guide](URL_SCRAPING_ENHANCEMENT_GUIDE.md)** - Complete step-by-step instructions for adding new website sources
+- **📋 [Supported URL Sources](SUPPORTED_URL_SOURCES.md)** - Reference list of all currently implemented sources and enhancement priorities
+- **⚙️ Cursor Rules Integration** - Automated guidance for URL scraping modifications in development environment
 
 ### Metadata Sources Evaluated
 
@@ -991,6 +997,28 @@ FM_SERVER=your_filemaker_server
 FM_DATABASE=your_database_name
 FM_USERNAME=your_username
 FM_PASSWORD=your_password
+```
+
+## 🔧 Development Tools & Automation
+
+### Automated Version Control
+This repository includes an automated git commit system that creates version control checkpoints twice daily:
+
+- **12:00 AM (midnight)** - Captures evening/late work  
+- **12:00 PM (noon)** - Captures morning work
+
+📖 **[Complete Setup Guide](./AUTO_COMMIT_SETUP.md)** - Full documentation including monitoring, troubleshooting, and configuration options.
+
+**Quick Status Check:**
+```bash
+# View recent auto-commits
+git log --oneline --grep="Daily auto-commit" -5
+
+# Check activity log
+tail -5 ~/auto_commit.log
+
+# View current cron schedule
+crontab -l
 ```
 
 ## 📋 Next Steps

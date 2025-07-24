@@ -76,8 +76,8 @@ WORKFLOW_STEPS = [
         "status_after": "4 - Scraping URL",
         "script": "stills_autolog_04_scrape_url.py",
         "description": "Scrape URL",
-        "conditional": True,  # Only run if metadata is insufficient
-        "evaluate_metadata_first": True  # New flag to check metadata quality first
+        "conditional": True,  # Only run if URL exists
+        "check_url_only": True  # Simple URL existence check
     },
     {
         "step_num": 5,
@@ -85,7 +85,8 @@ WORKFLOW_STEPS = [
         "status_after": "5 - Generating Description",  # Status while working
         "script": "stills_autolog_05_generate_description.py",
         "description": "Generate Description",
-        "final_status": "6 - Generating Embeddings"  # Status after completion
+        "final_status": "6 - Generating Embeddings",  # Status after completion
+        "evaluate_metadata": True  # Single evaluation checkpoint after URL scraping
     }
 ]
 
@@ -131,49 +132,81 @@ def combine_metadata(record_data):
     
     return "\n\n".join(metadata_parts)
 
-def evaluate_metadata_quality(record_data, token, has_url=False):
-    """Evaluate metadata quality using local analysis with URL-aware thresholds."""
+def evaluate_metadata_quality(record_data, token, record_id=None):
+    """Evaluate metadata quality using local analysis with simplified 40-point scale."""
     try:
         # Combine all metadata
         combined_metadata = combine_metadata(record_data)
         
         if not combined_metadata.strip():
             print(f"  -> No metadata available for evaluation")
+            console_msg = "Metadata Evaluation: NO METADATA AVAILABLE - Cannot evaluate quality"
+            if record_id:
+                write_to_dev_console(record_id, token, console_msg)
             return False
         
-        url_context = "with URL available" if has_url else "without URL"
-        print(f"  -> Evaluating combined metadata ({len(combined_metadata)} chars) {url_context}")
+        print(f"  -> Evaluating combined metadata ({len(combined_metadata)} chars)")
         
-        # Use local evaluator with URL awareness
-        evaluation = evaluate_metadata_local(combined_metadata, has_url)
+        # Use simplified local evaluator (no URL-aware logic needed)
+        evaluation = evaluate_metadata_local(combined_metadata)
         
         is_sufficient = evaluation.get("sufficient", False)
         reason = evaluation.get("reason", "No reason provided")
         confidence = evaluation.get("confidence", "medium")
         score = evaluation.get("score", 0.0)
         
-        print(f"  -> Local AI Evaluation: {'GOOD' if is_sufficient else 'BAD'}")
-        print(f"     Score: {score:.2f}")
+        print(f"  -> Metadata Evaluation: {'GOOD' if is_sufficient else 'BAD'}")
+        print(f"     Score: {score:.0f}/40")
         print(f"     Reason: {reason}")
         print(f"     Confidence: {confidence}")
+        
+        # Write evaluation results to AI_DevConsole
+        if record_id:
+            console_msg = f"Metadata Evaluation: {'✅ PASSED' if is_sufficient else '❌ FAILED'}\n"
+            console_msg += f"Score: {score:.0f}/50 (Threshold: 10+)\n"
+            console_msg += f"Confidence: {confidence}\n"
+            console_msg += f"Details: {reason}"
+            write_to_dev_console(record_id, token, console_msg)
         
         return is_sufficient
         
     except Exception as e:
-        print(f"  -> ERROR in local metadata evaluation: {e}")
-        # Fall back to basic heuristics if local evaluation fails
+        print(f"  -> ERROR in metadata evaluation: {e}")
+        
+        # Write error to console
+        if record_id:
+            console_msg = f"Metadata Evaluation: ❌ ERROR\nException: {str(e)}\nUsing fallback evaluation..."
+            write_to_dev_console(record_id, token, console_msg)
+        
+        # Fall back to basic heuristics
         combined_metadata = combine_metadata(record_data)
         
-        # URL-aware fallback thresholds
-        fallback_threshold = 100 if has_url else 50
-        fallback_context = "stricter fallback (URL available)" if has_url else "lenient fallback (no URL)"
-        
-        if len(combined_metadata) > fallback_threshold:
-            print(f"  -> Fallback: Using basic length check - GOOD ({fallback_context})")
+        # Simple fallback: 30+ characters is reasonable (more generous)
+        if len(combined_metadata) > 30:
+            print(f"  -> Fallback: Using basic length check - GOOD")
+            if record_id:
+                fallback_msg = f"Fallback Result: ✅ PASSED (length check)\nCombined metadata: {len(combined_metadata)} chars (>30 threshold)"
+                write_to_dev_console(record_id, token, fallback_msg)
             return True
         else:
-            print(f"  -> Fallback: Using basic length check - BAD ({fallback_context})")
+            print(f"  -> Fallback: Using basic length check - BAD")
+            if record_id:
+                fallback_msg = f"Fallback Result: ❌ FAILED (length check)\nCombined metadata: {len(combined_metadata)} chars (≤30 threshold)"
+                write_to_dev_console(record_id, token, fallback_msg)
             return False
+
+def write_to_dev_console(record_id, token, message):
+    """Write a message to the AI_DevConsole field."""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        console_entry = f"[{timestamp}] {message}"
+        
+        # Update the AI_DevConsole field
+        field_data = {FIELD_MAPPING["dev_console"]: console_entry}
+        config.update_record(token, "Stills", record_id, field_data)
+        
+    except Exception as e:
+        print(f"  -> WARNING: Failed to write to AI_DevConsole: {e}")
 
 def format_error_message(stills_id, step_name, error_details, error_type="Processing Error"):
     """Format error messages for the AI_DevConsole field in a user-friendly way."""
@@ -426,9 +459,9 @@ def run_workflow_step(step, stills_id, record_id, token):
             print(f"  -> INFO_Reviewed_Checkbox = {checkbox_status}, proceeding with tag application for {stills_id}")
             # Continue with tag application - the script will run normally below
     
-    # Handle conditional steps with metadata evaluation (URL-aware)
-    elif step.get("conditional") and step.get("evaluate_metadata_first"):
-        print(f"  -> Checking URL availability for conditional step")
+    # Handle conditional steps with simple URL check (always scrape if URL exists)
+    elif step.get("conditional") and step.get("check_url_only"):
+        print(f"  -> Checking URL availability for conditional URL scraping")
         # Get current record data to check URL availability
         record_data, token = get_current_record_data(record_id, token)
         if not record_data:
@@ -436,14 +469,14 @@ def run_workflow_step(step, stills_id, record_id, token):
             print(f"  -> Assuming no URL and continuing workflow")
             return True
         
-        # Check URL availability FIRST
+        # Check URL availability - always scrape if URL exists
         url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
         has_url = bool(url and url.strip())
         
         if has_url:
             print(f"  -> URL found for {stills_id}: {url}")
-            print(f"  -> Proceeding with URL scraping (always run when URL is available)")
-            # Always run URL scraping when URL is available - let the script handle content evaluation
+            print(f"  -> Proceeding with URL scraping (always scrape when URL is available)")
+            # Continue with URL scraping
         else:
             print(f"  -> No URL found for {stills_id}")
             print(f"  -> Skipping URL scraping (no URL available)")
@@ -452,44 +485,47 @@ def run_workflow_step(step, stills_id, record_id, token):
             print(f"  -> Status remains: {current_status} (URL scraping skipped, continuing workflow)")
             return True
     
-    # Handle other conditional steps (legacy)
-    elif step.get("conditional"):
-        if step_num == 4:  # Legacy URL scraping step
-            print(f"  -> Checking for URL in legacy conditional step")
-            # Get current record data to check for URL
-            record_data, token = get_current_record_data(record_id, token)
-            if not record_data:
-                print(f"  -> WARNING: Could not get record data for {stills_id}")
-                print(f"  -> Assuming no URL and continuing workflow")
-                return True
-            
-            url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
-            if not url:
-                print(f"  -> SKIP: No URL found for scraping for {stills_id}")
-                return True
-            else:
-                print(f"  -> URL found for {stills_id}: {url}")
-    
-    # Handle steps that require good metadata (legacy - now handled above)
-    if step.get("requires_good_metadata"):
-        print(f"  -> Checking metadata quality requirement")
-        # Get current record data to check metadata quality
+    # Handle metadata evaluation checkpoint (after URL scraping)
+    elif step.get("evaluate_metadata"):
+        print(f"  -> Metadata evaluation checkpoint - evaluating quality after URL scraping")
+        # Get current record data to evaluate final metadata quality
         record_data, token = get_current_record_data(record_id, token)
         if not record_data:
             print(f"  -> WARNING: Could not get record data for {stills_id}")
-            print(f"  -> Assuming metadata is BAD and continuing workflow anyway")
-            print(f"  -> AI can work with whatever metadata exists")
-            return True
-        
-        # Evaluate metadata quality inline (legacy mode - use lenient threshold)
-        if not evaluate_metadata_quality(record_data['fieldData'], token, has_url=False):
-            print(f"  -> HALT: Metadata quality is BAD for {stills_id}, not 'GOOD'")
-            # Set status to awaiting user input
+            print(f"  -> Assuming metadata is insufficient and halting workflow")
             if not update_status(record_id, token, "Awaiting User Input"):
                 print(f"  -> ERROR: Failed to update status to 'Awaiting User Input'")
             return False
+        
+        # Evaluate final metadata quality (after any URL scraping)
+        metadata_quality_good = evaluate_metadata_quality(record_data['fieldData'], token, record_id)
+        
+        if metadata_quality_good:
+            print(f"  -> GOOD: Metadata quality is sufficient, proceeding with description generation for {stills_id}")
+            # Continue with description generation
         else:
-            print(f"  -> Metadata quality is GOOD for {stills_id}, proceeding")
+            print(f"  -> BAD: Metadata quality is insufficient, halting workflow for {stills_id}")
+            print(f"  -> Setting status to 'Awaiting User Input' for manual intervention")
+            if not update_status(record_id, token, "Awaiting User Input"):
+                print(f"  -> ERROR: Failed to update status to 'Awaiting User Input'")
+            return False  # Stop workflow - needs user intervention
+    
+    # Handle other conditional steps (legacy - simplified)
+    elif step.get("conditional"):
+        print(f"  -> Legacy conditional step - checking for URL")
+        # Get current record data to check for URL
+        record_data, token = get_current_record_data(record_id, token)
+        if not record_data:
+            print(f"  -> WARNING: Could not get record data for {stills_id}")
+            print(f"  -> Assuming no URL and continuing workflow")
+            return True
+        
+        url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
+        if not url:
+            print(f"  -> SKIP: No URL found for scraping for {stills_id}")
+            return True
+        else:
+            print(f"  -> URL found for {stills_id}: {url}")
     
     # Run the script
     script_path = JOBS_DIR / script_name

@@ -1,4 +1,21 @@
+# Virtual environments
 .venv/
 .env/
 venv/
-env/ 
+env/
+
+# Temporary test files and directories
+temp/
+*.tmp
+*.temp
+test_*.py
+*_test.py
+test_output/
+debug_*
+sample_*
+
+# OS and editor files
+.DS_Store
+.vscode/
+*.pyc
+__pycache__/

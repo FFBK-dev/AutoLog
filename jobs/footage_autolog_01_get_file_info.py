@@ -17,6 +17,8 @@ FIELD_MAPPING = {
     "filepath": "SPECS_Filepath_Server",
     "metadata": "INFO_Metadata",
     "url": "SPECS_URL",
+    "status": "AutoLog_Status",
+    "dev_console": "AI_DevConsole",
     "codec": "SPECS_File_Codec",
     "framerate": "SPECS_File_Framerate",
     "start_tc": "SPECS_File_startTC",
@@ -436,9 +438,25 @@ if __name__ == "__main__":
         
         print(f"Processing file: {file_path}")
         
+        # Check if required volume is mounted (startup should have handled mounting)
+        if "/Volumes/" in file_path:
+            volume_path = "/".join(file_path.split("/")[:3])  # /Volumes/VolumeName
+            if not os.path.exists(volume_path) or not os.path.ismount(volume_path):
+                print(f"⚠️ Warning: Required volume not mounted: {volume_path}")
+        
         # Check if file exists
         if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Footage file not found: {file_path}")
+            error_msg = f"Footage file not found: {file_path}"
+            print(f"❌ {error_msg}")
+            
+            # Update record with error instead of crashing
+            error_data = {
+                FIELD_MAPPING["status"]: "Error - File Not Found",
+                FIELD_MAPPING["dev_console"]: error_msg
+            }
+            config.update_record(token, "FOOTAGE", record_id, error_data)
+            print(f"  -> Updated record status to indicate file not found")
+            sys.exit(1)  # Exit this specific job, but don't crash the whole system
         
         # Step 1: Extract EXIF metadata
         metadata = extract_exif_metadata(file_path)

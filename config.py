@@ -14,6 +14,99 @@ USERNAME = os.getenv("FILEMAKER_USERNAME", "Background")
 PASSWORD = os.getenv("FILEMAKER_PASSWORD", "july1776")
 # ───────────────────────────────────────────────────────────────────────────
 
+# ── SMB Volume Configuration ───────────────────────────────────────────────
+SMB_SERVER = "10.0.222.138"
+SMB_USERNAME = "admin"
+SMB_PASSWORD = "july1776"
+VOLUMES = {
+    "stills": "6 E2E",
+    "footage": "FTG_E2E"
+}
+# ───────────────────────────────────────────────────────────────────────────
+
+import subprocess
+import time
+
+def mount_volume(volume_type="footage"):
+    """Mount SMB volume if not already mounted."""
+    volume_name = VOLUMES.get(volume_type)
+    if not volume_name:
+        print(f"❌ Unknown volume type: {volume_type}")
+        return False
+    
+    mount_point = f"/Volumes/{volume_name}"
+    
+    # Check if already mounted
+    if os.path.exists(mount_point) and os.path.ismount(mount_point):
+        print(f"✅ Volume already mounted: {mount_point}")
+        return True
+    
+    # Mount the SMB volume using Finder's "Connect to Server" approach
+    smb_path = f"smb://{SMB_USERNAME}:{SMB_PASSWORD}@{SMB_SERVER}/{volume_name.replace(' ', '%20')}"
+    
+    try:
+        print(f"🔧 Connecting to {volume_name} via Finder (Connect to Server)...")
+        
+        # Use 'open' command to trigger the same connection as Finder's "Connect to Server"
+        result = subprocess.run([
+            "open", smb_path
+        ], capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            print(f"✅ Connection initiated for: {volume_name}")
+            
+            # Wait a moment for the mount to complete
+            time.sleep(3)
+            
+            # Verify mount worked by checking if it's actually mounted
+            if os.path.exists(mount_point) and os.path.ismount(mount_point):
+                print(f"✅ Successfully mounted: {mount_point}")
+                return True
+            else:
+                print(f"⚠️ Connection initiated but volume not yet mounted at {mount_point}")
+                # Wait a bit longer and try again
+                time.sleep(2)
+                if os.path.exists(mount_point) and os.path.ismount(mount_point):
+                    print(f"✅ Successfully mounted after delay: {mount_point}")
+                    return True
+                else:
+                    print(f"❌ Volume still not mounted after connection")
+                    return False
+        else:
+            print(f"❌ Connection failed with return code {result.returncode}")
+            print(f"❌ Connection stderr: {result.stderr}")
+            print(f"❌ Connection stdout: {result.stdout}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"❌ Mount operation timed out for volume: {volume_name}")
+        return False
+    except Exception as e:
+        print(f"❌ Error mounting volume {volume_name}: {e}")
+        return False
+
+def ensure_volume_mounted(file_path):
+    """Ensure the appropriate volume is mounted for a given file path."""
+    if not file_path or not isinstance(file_path, str):
+        return False
+    
+    # Determine volume type from path
+    if "/Volumes/6 E2E/" in file_path:
+        return mount_volume("stills")
+    elif "/Volumes/FTG_E2E/" in file_path:
+        return mount_volume("footage")
+    elif "/Volumes/" in file_path:
+        # Generic volume check - see if it exists
+        volume_path = "/".join(file_path.split("/")[:3])  # /Volumes/VolumeName
+        if os.path.exists(volume_path) and os.path.ismount(volume_path):
+            return True
+        else:
+            print(f"⚠️ Unknown volume in path: {file_path}")
+            return False
+    else:
+        # Local file path, no mounting needed
+        return True
+
 # --- EXISTING FUNCTIONS (Unchanged) ---
 
 def url(path: str) -> str:

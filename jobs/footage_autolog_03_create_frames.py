@@ -14,13 +14,16 @@ import config
 __ARGS__ = ["footage_id"]
 
 FIELD_MAPPING = {
+    # FOOTAGE Layout Fields (for looking up parent record)
     "footage_id": "INFO_FTG_ID",
     "filepath": "SPECS_Filepath_Server",
+    # FRAMES Layout Fields (for creating frame records)
     "frame_parent_id": "FRAMES_ParentID",
     "frame_status": "FRAMES_Status",
     "frame_timecode": "FRAMES_TC_IN",
     "frame_id": "FRAMES_ID",
-    "frame_thumbnail": "FRAMES_Thumbnail"
+    "frame_thumbnail": "FRAMES_Thumbnail",
+    "frame_framerate": "FOOTAGE::SPECS_File_Framerate"  # Related field from parent
 }
 
 def get_video_info(file_path):
@@ -156,7 +159,8 @@ def create_frame_record(token, footage_id, file_path, timecode_seconds, framerat
                 FIELD_MAPPING["frame_parent_id"]: footage_id,
                 FIELD_MAPPING["frame_timecode"]: timecode_formatted,
                 FIELD_MAPPING["frame_status"]: "1 - Pending Thumbnail",
-                FIELD_MAPPING["frame_id"]: frame_id
+                FIELD_MAPPING["frame_id"]: frame_id,
+                FIELD_MAPPING["frame_framerate"]: framerate
             }
         }
         

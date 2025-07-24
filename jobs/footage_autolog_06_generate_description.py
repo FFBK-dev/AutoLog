@@ -25,7 +25,8 @@ FIELD_MAPPING = {
     "frame_id": "FRAMES_ID",
     "frame_caption": "FRAMES_Caption",
     "frame_transcript": "FRAMES_Transcript",
-    "frame_timecode": "FRAMES_TC_IN"
+    "frame_timecode": "FRAMES_TC_IN",
+    "frame_framerate": "FOOTAGE::SPECS_File_Framerate"
 }
 
 def load_prompts():
@@ -237,20 +238,23 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         print(f"  -> Generating description for {footage_id} ({len(frames_data)} frames)")
         
         # Sort frames by timecode (convert HH:MM:SS:FF to seconds for sorting)
-        def timecode_to_seconds(tc_str):
-            """Convert HH:MM:SS:FF timecode to seconds."""
+        def timecode_to_seconds(tc_str, framerate=30.0):
+            """Convert HH:MM:SS:FF timecode to seconds using actual framerate."""
             try:
                 if not tc_str or tc_str == "0":
                     return 0
                 parts = tc_str.split(':')
                 if len(parts) == 4:  # HH:MM:SS:FF
                     hours, minutes, seconds, frames = map(int, parts)
-                    return hours * 3600 + minutes * 60 + seconds + (frames / 30.0)  # Assuming 30fps for frame conversion
+                    return hours * 3600 + minutes * 60 + seconds + (frames / framerate)
                 return 0
             except:
                 return 0
         
-        frames_sorted = sorted(frames_data, key=lambda x: timecode_to_seconds(x.get(FIELD_MAPPING["frame_timecode"], "0")))
+        frames_sorted = sorted(frames_data, key=lambda x: timecode_to_seconds(
+            x.get(FIELD_MAPPING["frame_timecode"], "0"), 
+            float(x.get(FIELD_MAPPING["frame_framerate"], 30.0))
+        ))
         
         # Count frames with content
         frames_with_audio = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_transcript"], "").strip())

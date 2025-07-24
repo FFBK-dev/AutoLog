@@ -535,10 +535,10 @@ def wait_for_all_frames_complete(token, footage_id, max_wait_time=1800):
             caption = frame_data.get("FRAMES_Caption", "").strip()
             transcript = frame_data.get("FRAMES_Transcript", "").strip()
             
-            # Frame is complete if:
+            # Frame is ready for Step 6 if:
             # 1. Status is "4 - Audio Transcribed" or higher (audio step complete, regardless of transcript content), OR
-            # 2. Has caption (caption step complete)
-            # Note: Status "4 - Audio Transcribed" means we've checked for audio, even if none was found
+            # 2. Has caption content (caption step complete)
+            # Note: This matches the completion criteria used throughout the codebase
             if (status in ["4 - Audio Transcribed", "5 - Generating Embeddings", "6 - Embeddings Complete"] or
                 caption):  # Has caption (caption step done)
                 ready_frames += 1
@@ -876,8 +876,12 @@ def monitor_and_process_frames_continuously(token, footage_id, estimated_timeout
             transcript = frame_data.get("FRAMES_Transcript", "").strip()
             
             # Check if frame is complete
+            # Frame is ready for Step 6 if:
+            # 1. Status is "4 - Audio Transcribed" or higher (audio step complete, regardless of transcript content), OR
+            # 2. Has caption content (caption step complete)
+            # Note: This matches the completion criteria used in the polling workflow
             if (status in ["4 - Audio Transcribed", "5 - Generating Embeddings", "6 - Embeddings Complete"] or
-                (caption and (transcript or has_audio is False))):  # Has caption AND (has transcript OR is silent video)
+                caption):  # Has caption (caption step done)
                 total_ready += 1
                 completed_frames.add(frame_id)
                 continue
@@ -1059,10 +1063,6 @@ if __name__ == "__main__":
     try:
         tprint(f"Starting frame processing for footage {footage_id}")
         
-        # Estimate timeout based on video characteristics
-        estimated_timeout = estimate_frame_processing_timeout(footage_id, token)
-        tprint(f"  -> Estimated processing timeout: {estimated_timeout}s")
-        
         # Step 1: Find all frame records for this footage
         frames = find_frames_for_footage(token, footage_id)
         
@@ -1073,13 +1073,107 @@ if __name__ == "__main__":
         
         print(f"Found {len(frames)} frame records to process")
         
+        # Step 2: BULK SILENCE DETECTION - Handle silent videos immediately
+        print(f"\n=== BULK SILENCE DETECTION ===")
+        
+        # Get footage file path for audio detection
+        footage_filepath = None
+        try:
+            footage_record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
+            footage_response = requests.get(
+                config.url(f"layouts/FOOTAGE/records/{footage_record_id}"),
+                headers=config.api_headers(token),
+                verify=False,
+                timeout=30
+            )
+            footage_filepath = footage_response.json()['response']['data'][0]['fieldData'].get('SPECS_Filepath_Server')
+        except Exception as e:
+            print(f"  -> Warning: Could not get footage filepath for bulk detection: {e}")
+        
+        # Quick bulk audio detection
+        if footage_filepath and os.path.exists(footage_filepath):
+            print(f"  -> 🔍 Checking if {footage_id} is silent...")
+            has_audio = check_video_has_audio(footage_filepath)
+            
+            if has_audio is False:
+                print(f"  -> 📵 Video is SILENT - bulk updating ALL frames!")
+                
+                # Count frames that need bulk update
+                frames_needing_update = []
+                for frame in frames:
+                    frame_data = frame['fieldData']
+                    status = frame_data.get(FIELD_MAPPING["frame_status"])
+                    transcript = frame_data.get("FRAMES_Transcript", "").strip()
+                    
+                    # Update if not already at "4 - Audio Transcribed" with empty transcript
+                    if status != "4 - Audio Transcribed" or transcript:
+                        frames_needing_update.append(frame)
+                
+                if frames_needing_update:
+                    print(f"  -> 🔄 Bulk updating {len(frames_needing_update)} frames as silent...")
+                    
+                    bulk_success = 0
+                    for frame in frames_needing_update:
+                        frame_record_id = frame['recordId']
+                        frame_id = frame['fieldData'].get(FIELD_MAPPING["frame_id"], frame_record_id)
+                        
+                        try:
+                            # Update frame with empty transcript and "Audio Transcribed" status
+                            update_data = {
+                                "FRAMES_Transcript": "",
+                                FIELD_MAPPING["frame_status"]: "4 - Audio Transcribed"
+                            }
+                            
+                            payload = {"fieldData": update_data}
+                            response = requests.patch(
+                                config.url(f"layouts/FRAMES/records/{frame_record_id}"),
+                                headers=config.api_headers(token),
+                                json=payload,
+                                verify=False,
+                                timeout=30
+                            )
+                            
+                            if response.status_code == 200:
+                                print(f"    -> ✅ {frame_id}: Marked as silent")
+                                bulk_success += 1
+                            else:
+                                print(f"    -> ❌ {frame_id}: Update failed ({response.status_code})")
+                                
+                        except Exception as e:
+                            print(f"    -> ❌ {frame_id}: Error updating: {e}")
+                    
+                    print(f"  -> 🎉 BULK UPDATE COMPLETE: {bulk_success}/{len(frames_needing_update)} frames updated")
+                    
+                    if bulk_success == len(frames_needing_update):
+                        print(f"✅ Silent video optimization: ALL {len(frames)} frames marked as completed!")
+                        print(f"🚀 {footage_id} ready for Step 6: Generate Description")
+                        sys.exit(0)  # Successfully completed via bulk update
+                    else:
+                        print(f"⚠️ Bulk update partially failed - continuing with individual processing...")
+                else:
+                    print(f"  -> ✅ All frames already marked as silent - nothing to update")
+                    print(f"✅ Frame processing completed for silent video {footage_id}")
+                    sys.exit(0)
+                    
+            elif has_audio is True:
+                print(f"  -> 🔊 Video HAS audio streams - proceeding with individual frame processing")
+            else:
+                print(f"  -> ⚠️ Could not detect audio - proceeding with individual frame processing")
+        else:
+            print(f"  -> ⚠️ File not accessible for bulk detection - proceeding with individual processing")
+        
+        # Step 3: Individual frame processing (for videos with audio or detection failures)
+        # Estimate timeout based on video characteristics
+        estimated_timeout = estimate_frame_processing_timeout(footage_id, token)
+        tprint(f"  -> Estimated processing timeout: {estimated_timeout}s")
+        
         # Use smart frame monitoring for maximum responsiveness
         print(f"\n🚀 Using SMART FRAME MONITORING for maximum responsiveness")
         if not monitor_and_process_frames_continuously(token, footage_id, estimated_timeout):
             print(f"❌ Smart frame monitoring failed or was interrupted")
             sys.exit(1)
         
-        # Step 5 complete - all frames should be at "4 - Audio Transcribed"
+        # Step 4: Final verification
         print(f"\n=== STEP 5: Frame Processing Complete ===")
         final_frames = find_frames_for_footage(token, footage_id)
         completed_count = len([f for f in final_frames if f['fieldData'].get(FIELD_MAPPING["frame_status"]) == "4 - Audio Transcribed"])

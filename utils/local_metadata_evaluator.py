@@ -61,139 +61,15 @@ class LocalMetadataEvaluator:
     def evaluate_metadata(self, text: str, has_url: bool = False) -> Dict[str, any]:
         """
         Evaluate metadata quality using local analysis.
-        Uses different thresholds based on whether URL scraping is possible.
         Returns dict with 'sufficient' (bool), 'reason' (str), 'confidence' (str), 'score' (float)
+        
+        NOTE: This method is deprecated. Use evaluate_metadata_local() function instead.
         """
-        if not text or not text.strip():
-            return {
-                'sufficient': False,
-                'reason': 'No metadata text provided',
-                'confidence': 'high',
-                'score': 0.0
-            }
-        
-        text_clean = text.strip()
-        
-        # Quick length check
-        if len(text_clean) < 20:
-            return {
-                'sufficient': False,
-                'reason': 'Text too short (less than 20 characters)',
-                'confidence': 'high',
-                'score': 0.1
-            }
-        
-        score = 0.0
-        reasons = []
-        
-        # 1. Basic text quality (20% of score)
-        length_score = min(len(text_clean) / 100, 1.0)  # Cap at 100 chars for full points
-        score += length_score * 0.2
-        
-        # 2. Check for boilerplate content (penalty)
-        text_lower = text_clean.lower()
-        boilerplate_count = sum(1 for phrase in self.boilerplate_indicators if phrase in text_lower)
-        boilerplate_penalty = min(boilerplate_count * 0.1, 0.3)  # Max 30% penalty
-        score -= boilerplate_penalty
-        
-        if boilerplate_count > 0:
-            reasons.append(f"Contains {boilerplate_count} boilerplate phrases")
-        
-        # 3. Historical keywords (30% of score)
-        historical_matches = sum(1 for keyword in self.historical_keywords if keyword in text_lower)
-        historical_score = min(historical_matches / 3, 1.0)  # Full points for 3+ matches
-        score += historical_score * 0.3
-        
-        if historical_matches > 0:
-            reasons.append(f"Contains {historical_matches} historical keywords")
-        
-        # 4. Archival quality indicators (20% of score)
-        archival_matches = sum(1 for indicator in self.archival_quality_indicators if indicator in text_lower)
-        archival_score = min(archival_matches / 2, 1.0)  # Full points for 2+ matches
-        score += archival_score * 0.2
-        
-        if archival_matches > 0:
-            reasons.append(f"Contains {archival_matches} archival quality indicators")
-        
-        # 5. Named Entity Recognition (30% of score) - if spaCy available
-        if nlp is not None:
-            try:
-                doc = nlp(text_clean)
-                
-                # Count valuable entity types
-                entity_counts = {'PERSON': 0, 'DATE': 0, 'GPE': 0, 'ORG': 0, 'EVENT': 0}
-                for ent in doc.ents:
-                    if ent.label_ in entity_counts:
-                        entity_counts[ent.label_] += 1
-                
-                # Score based on entity diversity and count
-                total_entities = sum(entity_counts.values())
-                entity_diversity = len([count for count in entity_counts.values() if count > 0])
-                
-                entity_score = min(total_entities / 5, 1.0) * 0.7 + min(entity_diversity / 4, 1.0) * 0.3
-                score += entity_score * 0.3
-                
-                if total_entities > 0:
-                    reasons.append(f"Contains {total_entities} named entities ({entity_diversity} types)")
-                
-            except Exception as e:
-                # If spaCy fails, don't penalize
-                pass
-        
-        # 6. Date pattern recognition (bonus points)
-        date_patterns = [
-            r'\b\d{4}\b',  # Years
-            r'\b\d{1,2}/\d{1,2}/\d{2,4}\b',  # Dates
-            r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\b',  # Month Day, Year
-            r'\bcirca\s+\d{4}\b',  # Circa dates
-            r'\bc\.\s*\d{4}\b',  # c. dates
-        ]
-        
-        date_matches = sum(1 for pattern in date_patterns if re.search(pattern, text_lower))
-        if date_matches > 0:
-            score += 0.1  # Bonus for dates
-            reasons.append(f"Contains {date_matches} date patterns")
-        
-        # Cap score at 1.0
-        score = min(score, 1.0)
-        
-        # Determine sufficiency with URL-aware thresholds
-        if has_url:
-            # Stricter threshold when URL exists (we can improve metadata)
-            threshold = 0.5
-            context = "URL available - using stricter threshold"
-        else:
-            # More lenient threshold when no URL (can't improve metadata anyway)
-            threshold = 0.3
-            context = "No URL available - using lenient threshold"
-        
-        sufficient = score >= threshold
-        
-        # Determine confidence
-        if score >= 0.6:  # Lowered from 0.8
-            confidence = 'high'
-        elif score >= 0.4:  # Lowered from 0.6
-            confidence = 'medium'
-        else:
-            confidence = 'low'
-        
-        # Generate reason
-        if sufficient:
-            reason = f"Good quality metadata (score: {score:.2f}, threshold: {threshold:.1f}). {context}. " + "; ".join(reasons)
-        else:
-            reason = f"Insufficient metadata quality (score: {score:.2f}, threshold: {threshold:.1f}). {context}. " + "; ".join(reasons)
-        
-        return {
-            'sufficient': sufficient,
-            'reason': reason,
-            'confidence': confidence,
-            'score': score
-        }
+        # Delegate to the new function for consistency
+        return evaluate_metadata_local(text, has_url)
 
 def test_evaluator():
-    """Test the evaluator with sample texts and different URL scenarios."""
-    evaluator = LocalMetadataEvaluator()
-    
+    """Test the evaluator with sample texts using the new 40-point scale."""
     test_cases = [
         "Portrait of General Ulysses S. Grant, circa 1865, taken during the American Civil War by photographer Mathew Brady",
         "Stock photo of a man in uniform, royalty free, download now",
@@ -206,23 +82,155 @@ def test_evaluator():
     for i, text in enumerate(test_cases, 1):
         print(f"Test {i}: {text[:50]}...")
         
-        # Test with URL available (stricter threshold)
-        result_with_url = evaluator.evaluate_metadata(text, has_url=True)
-        print(f"  With URL: {'✅ SUFFICIENT' if result_with_url['sufficient'] else '❌ INSUFFICIENT'}")
-        print(f"    Score: {result_with_url['score']:.2f}, Reason: {result_with_url['reason']}")
-        
-        # Test without URL (lenient threshold)
-        result_no_url = evaluator.evaluate_metadata(text, has_url=False)
-        print(f"  No URL:  {'✅ SUFFICIENT' if result_no_url['sufficient'] else '❌ INSUFFICIENT'}")
-        print(f"    Score: {result_no_url['score']:.2f}, Reason: {result_no_url['reason']}")
+        result = evaluate_metadata_local(text)
+        print(f"  {'✅ SUFFICIENT' if result['sufficient'] else '❌ INSUFFICIENT'}")
+        print(f"    Score: {result['score']:.0f}/40, Reason: {result['reason']}")
         print()
 
 # Global instance
 _evaluator = LocalMetadataEvaluator()
 
 def evaluate_metadata_local(text: str, has_url: bool = False) -> Dict[str, any]:
-    """Main function for metadata evaluation - matches OpenAI API format."""
-    return _evaluator.evaluate_metadata(text, has_url)
+    """
+    Evaluate metadata quality using local analysis.
+    Uses a realistic 40-point scale where 15+ is considered good quality.
+    Returns dict with 'sufficient' (bool), 'reason' (str), 'confidence' (str), 'score' (float)
+    """
+    if not text or not text.strip():
+        return {
+            'sufficient': False,
+            'reason': 'No metadata text provided',
+            'confidence': 'high',
+            'score': 0.0
+        }
+
+    text_clean = text.strip()
+    
+    # Quick length check - more generous
+    if len(text_clean) < 15:
+        return {
+            'sufficient': False,
+            'reason': 'Text too short (less than 15 characters)',
+            'confidence': 'high',
+            'score': 3.0
+        }
+
+    evaluator = LocalMetadataEvaluator()
+    score = 0.0
+    reasons = []
+    
+    # 1. Basic text quality (12 points max) - More generous
+    length_score = min(len(text_clean) / 80, 1.0) * 12  # 0-12 points, easier to get full points
+    score += length_score
+    
+    # 2. Check for boilerplate content (penalty up to -8 points) - Less harsh penalty
+    text_lower = text_clean.lower()
+    boilerplate_count = sum(1 for phrase in evaluator.boilerplate_indicators if phrase in text_lower)
+    boilerplate_penalty = min(boilerplate_count * 2, 8)  # Max 8 point penalty (reduced)
+    score -= boilerplate_penalty
+    
+    if boilerplate_count > 0:
+        reasons.append(f"Contains {boilerplate_count} boilerplate phrases (-{boilerplate_penalty} pts)")
+    
+    # 3. Historical keywords (15 points max) - More generous
+    historical_matches = sum(1 for keyword in evaluator.historical_keywords if keyword in text_lower)
+    historical_score = min(historical_matches / 2, 1.0) * 15  # 0-15 points, only need 2 matches for full
+    score += historical_score
+    
+    if historical_matches > 0:
+        reasons.append(f"Contains {historical_matches} historical keywords (+{historical_score:.0f} pts)")
+    
+    # 4. Archival quality indicators (10 points max) - More generous
+    archival_indicators = ['photographer', 'creator', 'archive', 'collection', 'museum', 'library', 'footage', 'film', 'video', 'documentary']
+    archival_matches = sum(1 for indicator in archival_indicators if indicator in text_lower)
+    archival_score = min(archival_matches / 1, 1.0) * 10  # 0-10 points, only need 1 match for full
+    score += archival_score
+    
+    if archival_matches > 0:
+        reasons.append(f"Contains {archival_matches} archival quality indicators (+{archival_score:.0f} pts)")
+    
+    # 5. Named entity detection (10 points max) - More generous
+    # Simple patterns for names, places, organizations
+    name_pattern = r'\b[A-Z][a-z]+ [A-Z][a-z]+\b'  # "John Smith"
+    place_pattern = r'\b[A-Z][a-z]+(?:, [A-Z][a-z]+)*\b'  # "New York"
+    org_pattern = r'\b[A-Z][A-Z\s&]{2,}\b'  # "FBI", "NEW YORK TIMES"
+    
+    name_matches = len(re.findall(name_pattern, text_clean))
+    place_matches = len(re.findall(place_pattern, text_clean))
+    org_matches = len(re.findall(org_pattern, text_clean))
+    
+    total_entities = name_matches + place_matches + org_matches
+    entity_score = min(total_entities / 2, 1.0) * 10  # 0-10 points, only need 2 entities for full
+    score += entity_score
+    
+    if total_entities > 0:
+        reasons.append(f"Contains {total_entities} named entities (+{entity_score:.0f} pts)")
+    
+    # 6. Date patterns (bonus up to 6 points) - More generous
+    date_patterns = [
+        r'\b(18|19|20)\d{2}\b',  # Years
+        r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\b',
+        r'\bcirca\b', r'\bc\.\s*\d{4}\b', r'\bca\.\s*\d{4}\b'
+    ]
+    
+    date_matches = sum(1 for pattern in date_patterns if re.search(pattern, text_lower))
+    if date_matches > 0:
+        date_bonus = min(date_matches * 3, 6)  # Up to 6 bonus points
+        score += date_bonus
+        reasons.append(f"Contains {date_matches} date patterns (+{date_bonus} pts)")
+    
+    # 7. Technical metadata bonus (5 points) - New category for footage
+    technical_terms = ['fps', 'resolution', 'codec', 'bitrate', 'duration', 'format', 'timecode']
+    technical_matches = sum(1 for term in technical_terms if term in text_lower)
+    if technical_matches > 0:
+        technical_bonus = min(technical_matches, 5)  # Up to 5 bonus points
+        score += technical_bonus
+        reasons.append(f"Contains {technical_matches} technical terms (+{technical_bonus} pts)")
+    
+    # Cap score at 50 (new realistic maximum with more generous scoring)
+    score = min(score, 50.0)
+    
+    # Much more generous threshold: 10/50 is good quality (20% = passing grade)
+    threshold = 10.0
+    sufficient = score >= threshold
+    
+    # Determine confidence based on 50-point scale
+    if score >= 30:      # 60% = A grade
+        confidence = 'high'
+    elif score >= 20:    # 40% = B grade  
+        confidence = 'medium'
+    else:                # Below 40% = C or lower
+        confidence = 'low'
+    
+    # Generate reason with 50-point scoring (much more generous)
+    if score >= 40:
+        grade = "A+"
+    elif score >= 30:
+        grade = "A"
+    elif score >= 25:
+        grade = "B+"
+    elif score >= 20:
+        grade = "B"
+    elif score >= 15:
+        grade = "C+"
+    elif score >= 10:
+        grade = "C (PASSING)"
+    elif score >= 5:
+        grade = "D"
+    else:
+        grade = "F"
+    
+    if sufficient:
+        reason = f"Good quality metadata ({score:.0f}/50 - Grade: {grade}). " + "; ".join(reasons)
+    else:
+        reason = f"Insufficient metadata quality ({score:.0f}/50 - Grade: {grade}, need 10+ to pass). " + "; ".join(reasons)
+    
+    return {
+        'sufficient': sufficient,
+        'reason': reason,
+        'confidence': confidence,
+        'score': score
+    }
 
 if __name__ == "__main__":
     test_evaluator() 

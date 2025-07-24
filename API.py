@@ -87,6 +87,25 @@ def check_key(x_api_key: str = Header(None)):
 async def startup_event():
     logging.info("🚀 Starting FileMaker Automation API")
     
+    # Mount required network volumes at startup
+    logging.info("🔧 Mounting network volumes...")
+    
+    try:
+        # Mount footage volume
+        if config.mount_volume("footage"):
+            logging.info("✅ Footage volume (FTG_E2E) mounted successfully")
+        else:
+            logging.warning("⚠️ Failed to mount footage volume (FTG_E2E)")
+        
+        # Mount stills volume  
+        if config.mount_volume("stills"):
+            logging.info("✅ Stills volume (6 E2E) mounted successfully")
+        else:
+            logging.warning("⚠️ Failed to mount stills volume (6 E2E)")
+            
+    except Exception as e:
+        logging.error(f"❌ Error during volume mounting: {e}")
+    
     # Set up any startup tasks here
     logging.info("⚠️ Using direct OpenAI API calls")
 
@@ -97,42 +116,92 @@ async def shutdown_event():
 # Background task runner with enhanced logging
 def run_job_with_tracking(job_id: str, cmd: List[str]):
     """Run a job with comprehensive tracking and logging."""
+    # Check if this is the polling script - show more detailed output
+    is_polling_script = any("footage_autolog" in str(c) for c in cmd)
+    
+    process = None
     try:
         logging.info(f"🚀 Starting {job_id}: {' '.join(cmd)}")
         
-        # Run the job with timeout
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # Run the job with timeout (longer for polling script)
+        timeout = 3600 if is_polling_script else 600  # 1 hour for polling, 10 min for others
         
-        # Process output for enhanced logging
-        if result.stdout:
-            for line in result.stdout.split('\n'):
-                if line.strip():
-                    # Log key workflow events
-                    if "=== Starting AutoLog workflow for" in line:
-                        item_id = line.split("for ")[-1].split(" ")[0]
-                        logging.info(f"📋 {job_id} - Starting item: {item_id}")
-                    elif "=== Workflow COMPLETED successfully for" in line:
-                        item_id = line.split("for ")[-1].split(" ")[0]
-                        logging.info(f"✅ {job_id} - Completed item: {item_id}")
-                    elif "DEBUG:" in line and ("OpenAI" in line or "FileMaker" in line or "ERROR" in line):
-                        logging.info(f"🔍 {job_id} - {line.strip()}")
-        
-        # Final summary
-        if result.returncode == 0:
-            logging.info(f"✅ {job_id} completed successfully")
+        if is_polling_script:
+            # Use real-time streaming for polling scripts
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'  # Force Python to use unbuffered output
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                env=env
+            )
+            
+            # Stream output in real-time
+            try:
+                for line in iter(process.stdout.readline, ''):
+                    if line.strip():
+                        skip_line = any(pattern in line for pattern in [
+                            "warnings.warn(",
+                            "urllib3",
+                            "site-packages",
+                            "/Library/",
+                            "DeprecationWarning"
+                        ])
+                        
+                        if not skip_line:
+                            logging.info(f"🔄 {job_id} - {line.strip()}")
+            except Exception as stream_e:
+                logging.error(f"❌ {job_id} streaming error: {stream_e}")
+            
+            return_code = process.wait(timeout=timeout)
+            
         else:
-            logging.error(f"❌ {job_id} failed with exit code {result.returncode}")
-            # Log both stderr and stdout for complete error information
+            # Use traditional capture for other scripts
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return_code = result.returncode
+            
+            # Process output for enhanced logging
+            if result.stdout:
+                for line in result.stdout.split('\n'):
+                    if line.strip():
+                        # Log key workflow events for other scripts
+                        if "=== Starting AutoLog workflow for" in line:
+                            item_id = line.split("for ")[-1].split(" ")[0]
+                            logging.info(f"📋 {job_id} - Starting item: {item_id}")
+                        elif "=== Workflow COMPLETED successfully for" in line:
+                            item_id = line.split("for ")[-1].split(" ")[0]
+                            logging.info(f"✅ {job_id} - Completed item: {item_id}")
+                        elif "DEBUG:" in line and ("OpenAI" in line or "FileMaker" in line or "ERROR" in line):
+                            logging.info(f"🔍 {job_id} - {line.strip()}")
+            
             if result.stderr:
                 logging.error(f"❌ {job_id} stderr: {result.stderr}")
-            if result.stdout:
-                logging.error(f"❌ {job_id} stdout: {result.stdout}")
+        
+        # Final summary
+        if return_code == 0:
+            logging.info(f"✅ {job_id} completed successfully")
+        else:
+            logging.error(f"❌ {job_id} failed with exit code {return_code}")
             
     except subprocess.TimeoutExpired:
-        logging.error(f"⏱️ {job_id} timed out after 10 minutes")
+        timeout_msg = "1 hour" if is_polling_script else "10 minutes"
+        logging.error(f"⏱️ {job_id} timed out after {timeout_msg}")
+        if process:
+            process.kill()
+            process.wait()
     except Exception as e:
         logging.error(f"❌ {job_id} error: {str(e)}")
+        if process:
+            process.kill()
+            process.wait()
     finally:
+        if process and process.stdout:
+            process.stdout.close()
         job_tracker.complete_job(job_id)
 
 @app.get("/openai/usage")
@@ -274,16 +343,106 @@ def run_job(job: str, background_tasks: BackgroundTasks, payload: dict = Body({}
     # Submit job for tracking
     job_id = job_tracker.submit_job(job, args)
     
-    # Run job in background
-    background_tasks.add_task(run_job_with_tracking, job_id, cmd)
+    # Special handling for footage_autolog to support polling parameters
+    if job == "footage_autolog":
+        duration = payload.get('duration', 3600)  # Default: 1 hour
+        interval = payload.get('interval', 10)    # Default: 10 seconds (fast polling)
+        
+        def run_footage_autolog():
+            """Run footage_autolog with environment variables and real-time streaming."""
+            env = os.environ.copy()
+            env['POLL_DURATION'] = str(duration)
+            env['POLL_INTERVAL'] = str(interval)
+            env['PYTHONUNBUFFERED'] = '1'  # Force Python to use unbuffered output
+            
+            process = None
+            try:
+                logging.info(f"🚀 Starting {job_id}: {' '.join(cmd)} (duration={duration}s, interval={interval}s)")
+                
+                # Use Popen for real-time streaming
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    text=True,
+                    bufsize=1,  # Line buffered
+                    universal_newlines=True,
+                    env=env
+                )
+                
+                # Stream output in real-time
+                try:
+                    logging.info(f"🔄 {job_id} - Starting real-time output streaming...")
+                    line_count = 0
+                    for line in iter(process.stdout.readline, ''):
+                        line_count += 1
+                        if line.strip():
+                            # Filter out verbose traces
+                            skip_line = any(pattern in line for pattern in [
+                                "warnings.warn(",
+                                "urllib3",
+                                "site-packages", 
+                                "/Library/",
+                                "DeprecationWarning"
+                            ])
+                            
+                            if not skip_line:
+                                logging.info(f"🔄 {job_id} - {line.strip()}")
+                        elif line_count % 100 == 0:  # Debug: Show we're getting empty lines too
+                            logging.info(f"🔄 {job_id} - [DEBUG] Read {line_count} lines from process...")
+                    
+                    logging.info(f"🔄 {job_id} - Finished streaming output (total lines: {line_count})")
+                except Exception as stream_e:
+                    logging.error(f"❌ {job_id} streaming error: {stream_e}")
+                
+                # Wait for process completion
+                return_code = process.wait(timeout=duration + 300)
+                
+                if return_code == 0:
+                    logging.info(f"✅ {job_id} completed successfully")
+                else:
+                    logging.error(f"❌ {job_id} failed with exit code {return_code}")
+                        
+            except subprocess.TimeoutExpired:
+                logging.error(f"⏱️ {job_id} timed out")
+                if process:
+                    process.kill()
+                    process.wait()
+            except Exception as e:
+                logging.error(f"❌ {job_id} error: {str(e)}")
+                if process:
+                    process.kill()
+                    process.wait()
+            finally:
+                if process and process.stdout:
+                    process.stdout.close()
+                job_tracker.complete_job(job_id)
+        
+        background_tasks.add_task(run_footage_autolog)
+    else:
+        # Run job in background (normal jobs)
+        background_tasks.add_task(run_job_with_tracking, job_id, cmd)
     
-    return {
+    # Build response
+    response = {
         "job_id": job_id,
         "job_name": job,
         "args": args,
         "submitted": True,
         "status": "running"
     }
+    
+    # Add polling parameters for footage_autolog
+    if job == "footage_autolog":
+        duration = payload.get('duration', 3600)
+        interval = payload.get('interval', 30)
+        response.update({
+            "poll_duration": duration,
+            "poll_interval": interval,
+            "message": f"Polling workflow started for {duration}s with {interval}s intervals (faster response mode)"
+        })
+    
+    return response
 
 @app.get("/jobs")
 def list_jobs():
@@ -300,6 +459,103 @@ def list_jobs():
     return {"jobs": sorted(jobs)}
 
 # Health check endpoint
+# Polling workflow endpoint
+@app.post("/poll/footage")
+def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Body({})):
+    """Start the polling-based footage workflow that continuously processes records by status."""
+    
+    # Parse polling parameters
+    poll_duration = payload.get('duration', 3600)  # Default: 1 hour
+    poll_interval = payload.get('interval', 10)    # Default: 10 seconds (fast polling)
+    
+    # Validate parameters
+    if poll_duration < 60 or poll_duration > 28800:  # 1 minute to 8 hours
+        raise HTTPException(status_code=400, detail="Duration must be between 60 and 28800 seconds (1 minute to 8 hours)")
+    
+    if poll_interval < 5 or poll_interval > 300:  # 5 seconds to 5 minutes
+        raise HTTPException(status_code=400, detail="Interval must be between 5 and 300 seconds")
+    
+    # Build command for polling workflow
+    cmd = [
+        "python3", 
+        str(Path(__file__).resolve().parent / "jobs" / "footage_autolog.py")
+    ]
+    
+    # Set environment variables for polling parameters
+    env = os.environ.copy()
+    env['POLL_DURATION'] = str(poll_duration)
+    env['POLL_INTERVAL'] = str(poll_interval)
+    
+    # Submit job for tracking
+    job_id = job_tracker.submit_job("footage_polling", [f"duration={poll_duration}", f"interval={poll_interval}"])
+    
+    # Run polling workflow in background with custom environment
+    def run_polling_job():
+        process = None
+        try:
+            logging.info(f"🔄 Starting polling workflow {job_id} (duration={poll_duration}s, interval={poll_interval}s)")
+            
+            # Use real-time streaming for polling
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
+                env=env
+            )
+            
+            # Stream output in real-time
+            try:
+                for line in iter(process.stdout.readline, ''):
+                    if line.strip():
+                        # Show most polling script output (filter out only very verbose lines)
+                        skip_line = any(pattern in line for pattern in [
+                            "warnings.warn(",  # Skip warning traces
+                            "urllib3",         # Skip urllib3 warnings
+                            "site-packages"    # Skip package traces
+                        ])
+                        
+                        if not skip_line:
+                            logging.info(f"🔄 {job_id} - {line.strip()}")
+            except Exception as stream_e:
+                logging.error(f"❌ {job_id} streaming error: {stream_e}")
+            
+            return_code = process.wait(timeout=poll_duration + 300)
+            
+            if return_code == 0:
+                logging.info(f"✅ {job_id} completed successfully")
+            else:
+                logging.error(f"❌ {job_id} failed with exit code {return_code}")
+                    
+        except subprocess.TimeoutExpired:
+            logging.error(f"⏱️ {job_id} timed out")
+            if process:
+                process.kill()
+                process.wait()
+        except Exception as e:
+            logging.error(f"❌ {job_id} error: {str(e)}")
+            if process:
+                process.kill()
+                process.wait()
+        finally:
+            if process and process.stdout:
+                process.stdout.close()
+            job_tracker.complete_job(job_id)
+    
+    background_tasks.add_task(run_polling_job)
+    
+    return {
+        "job_id": job_id,
+        "job_name": "footage_polling",
+        "poll_duration": poll_duration,
+        "poll_interval": poll_interval,
+        "submitted": True,
+        "status": "running",
+        "message": f"Polling workflow started for {poll_duration}s with {poll_interval}s intervals"
+    }
+
 @app.get("/health")
 def health_check():
     """Basic health check endpoint."""

@@ -35,8 +35,19 @@
 
 ### File Organization
 - `/jobs/` - Individual API endpoint scripts
+- `/documentation/` - **ALL documentation files** (README.md, guides, specs, etc.)
+- `/temp/` - **ALL temporary test files** created during development/testing
 - `/legacy/` - Scripts to be converted (temporary)
 - Root level - Main API server, configuration, and core utilities
+
+#### File Placement Rules
+- **Documentation**: ALL new documentation MUST be stored in `/documentation/` folder
+  - This includes README files, guides, specifications, setup instructions, etc.
+  - Do NOT create documentation files in root or other directories
+- **Testing**: ALL temporary test files MUST be placed in `/temp/` folder
+  - This includes test scripts, sample data, debugging files, etc.
+  - Clean up test files after completion or mark clearly for deletion
+  - Do NOT leave test files scattered throughout the project
 
 ## Modern FastAPI Patterns
 
@@ -586,6 +597,119 @@ def get_system_health():
 - Document field mappings and their purposes
 - Explain complex retry logic and error handling
 - Comment on workflow state transitions
+
+## URL Scraping Enhancement Protocol
+
+### Overview
+When adding new website sources to the URL scraping system, follow the **additive approach** - never remove or modify existing functionality. Each new source builds upon the existing system.
+
+### Key Files to Modify
+**Primary File**: `utils/url_scraper.py`
+- Contains the main scraping engine
+- All new sources must be added here
+- Follow the established patterns for consistency
+
+**Related Files** (reference only - do NOT modify):
+- `utils/url_validator.py` - URL validation utilities
+- `utils/local_metadata_evaluator.py` - Metadata quality evaluation
+- `jobs/stills_autolog_04_scrape_url.py` - Stills workflow integration
+- `jobs/footage_autolog_04_scrape_url.py` - Footage workflow integration
+
+### Required Steps for Adding New Sources
+
+#### 1. Domain Detection (REQUIRED)
+**Location**: `utils/url_scraper.py` → `_detect_website_type()` method
+**Rule**: Add new domain detection **BEFORE** existing patterns
+**Pattern**:
+```python
+# NEW SOURCE - Add at top of method
+if 'new-domain.edu' in domain:
+    return "descriptive_source_name"
+
+# Existing sources continue below...
+```
+
+#### 2. Specialized Scraper Method (REQUIRED)
+**Location**: `utils/url_scraper.py` → After existing `_scrape_*` methods
+**Naming**: `_scrape_descriptive_source_name(self, url)`
+**Must Include**:
+- Request handling with timeout
+- BeautifulSoup HTML parsing
+- Error handling with institution-specific error messages
+- Multiple extraction strategies (tables, lists, JSON, meta tags)
+- Fallback content extraction
+- Return None on failure
+
+#### 3. Integration into Main Logic (REQUIRED)
+**Location**: `utils/url_scraper.py` → `scrape_url()` method
+**Rule**: Add new source **BEFORE** existing sources in if/elif chain
+**Pattern**:
+```python
+if website_type == "new_source_name":
+    content = self._scrape_new_source_name(url)
+    if content:
+        print(f"  -> Institution Name extraction successful ({len(content)} chars)")
+        return content
+elif website_type == "temple":  # Existing sources continue...
+```
+
+#### 4. Quality Evaluation Enhancement (OPTIONAL)
+**Location**: `utils/url_scraper.py` → `evaluate_metadata_quality()` method
+**Purpose**: Add institution-specific keywords for better quality scoring
+**Rule**: Add new keywords without removing existing ones
+
+#### 5. Testing (REQUIRED)
+**Location**: Create test script in `/temp/` folder
+**Purpose**: Verify new source works correctly
+**Rule**: Delete test file after verification
+
+### Critical Rules
+
+#### ✅ ALWAYS DO:
+- **Add sources additively** - never remove existing functionality
+- **Place new detection logic FIRST** in the detection method
+- **Use descriptive, institution-specific names** (e.g., "yale", "harvard", "smithsonian")
+- **Include comprehensive error handling** with institution-specific messages
+- **Test with multiple URLs** from the target institution
+- **Follow existing code patterns** for consistency
+- **Clean up temporary test files** after completion
+
+#### ❌ NEVER DO:
+- **Modify existing scraping methods** for other institutions
+- **Change the order of existing detection logic**
+- **Remove or comment out existing sources**
+- **Hardcode specific URLs** (use domain patterns)
+- **Skip error handling**
+- **Leave test files in the repository**
+- **Break existing fallback mechanisms**
+
+### Documentation Requirements
+When adding a new source:
+1. **Update** `documentation/URL_SCRAPING_ENHANCEMENT_GUIDE.md`
+2. **Add example URLs** for the new institution
+3. **Document any special parsing challenges**
+4. **Note any unique patterns or requirements**
+
+### Quality Assurance
+Before considering the work complete:
+1. **Test existing sources** to ensure no regression
+2. **Test new source** with multiple representative URLs
+3. **Verify integration** with actual workflow jobs
+4. **Confirm quality evaluation** produces reasonable scores
+5. **Check that fallback mechanisms** still work properly
+
+### Reference Documentation
+- Complete step-by-step guide: `documentation/URL_SCRAPING_ENHANCEMENT_GUIDE.md`
+- Existing implementations: See `_scrape_temple()`, `_scrape_contentdm()` in `utils/url_scraper.py`
+- Integration examples: `jobs/stills_autolog_04_scrape_url.py`, `jobs/footage_autolog_04_scrape_url.py`
+
+### Architecture Principle
+The URL scraping system uses a **cascade approach**:
+1. **Specialized scrapers** for known institutions (highest priority)
+2. **General scrapers** for unknown sites (medium priority)  
+3. **Selenium fallback** for JavaScript-heavy sites (lowest priority)
+
+New sources should always be added to the specialized scraper tier with appropriate domain detection.
 
 ## Prohibited Patterns
 

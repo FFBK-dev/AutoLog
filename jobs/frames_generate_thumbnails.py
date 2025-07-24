@@ -16,10 +16,10 @@ import config
 __ARGS__ = []
 
 FIELD_MAPPING = {
-    "frame_id": "FRAME_ID",
+    "frame_id": "FRAMES_ID",
     "parent_id": "FRAMES_ParentID",
     "status": "FRAMES_Status",
-    "timecode": "FRAMES_TC_IN_Seconds",
+    "timecode": "FRAMES_TC_IN",
     "thumbnail": "FRAMES_Thumbnail",
     "footage_filepath": "Footage::SPECS_Filepath_Server"
 }
