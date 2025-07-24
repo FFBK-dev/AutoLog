@@ -224,6 +224,44 @@ def set_awaiting_user_input(token, record_id, stills_id, error_message):
         print(f"DEBUG: Failed to set 'Awaiting User Input' status: {e}")
         return False
 
+def get_current_dev_console(record_id, token, layout):
+    """Get the current AI_DevConsole content from a record."""
+    try:
+        response = requests.get(
+            config.url(f"layouts/{layout}/records/{record_id}"),
+            headers=config.api_headers(token),
+            verify=False,
+            timeout=30
+        )
+        response.raise_for_status()
+        record_data = response.json()['response']['data'][0]['fieldData']
+        return record_data.get("AI_DevConsole", "")
+    except Exception as e:
+        print(f"  -> WARNING: Failed to get AI_DevConsole: {e}")
+        return ""
+
+def write_to_dev_console(record_id, token, message):
+    """Write a message to the AI_DevConsole field."""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        console_entry = f"[{timestamp}] {message}"
+        
+        # Get current console content to append rather than overwrite
+        current_console = get_current_dev_console(record_id, token, "Stills")
+        
+        # Append new message
+        if current_console:
+            new_console = current_console + "\n\n" + console_entry
+        else:
+            new_console = console_entry
+        
+        # Update the AI_DevConsole field
+        field_data = {FIELD_MAPPING["dev_console"]: new_console}
+        config.update_record(token, "Stills", record_id, field_data)
+        
+    except Exception as e:
+        print(f"  -> WARNING: Failed to write to AI_DevConsole: {e}")
+
 def update_status(record_id, token, new_status, max_retries=3):
     """Update the AutoLog_Status field with retry logic."""
     current_token = token
@@ -306,6 +344,10 @@ def process_single_item(stills_id, token, continue_workflow=False):
             INFO_Metadata=metadata_from_fm if metadata_from_fm else "",
             INFO_Description=existing_description if existing_description else ""
         )
+
+        # Log the prompt to AI_DevConsole for prompt engineering visibility
+        prompt_log_message = f"AI Prompt Engineering - Description Generation\n{prompt_text}"
+        write_to_dev_console(record_id, token, prompt_log_message)
 
         # Create the message with image
         messages = [

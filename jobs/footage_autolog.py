@@ -259,6 +259,10 @@ def check_frame_completion(token, footage_id):
 def evaluate_metadata_quality(record_data, token, record_id=None):
     """Evaluate metadata quality using local analysis with simplified 40-point scale."""
     try:
+        # Check if this is an LF item (original camera file)
+        footage_id = record_data.get(FIELD_MAPPING["footage_id"], "")
+        is_lf_item = footage_id and footage_id.startswith("LF")
+        
         # Combine all metadata fields
         metadata_parts = []
         
@@ -284,6 +288,12 @@ def evaluate_metadata_quality(record_data, token, record_id=None):
             console_msg = "Metadata Evaluation: NO METADATA AVAILABLE - Cannot evaluate quality"
             if record_id:
                 write_to_dev_console(record_id, token, console_msg)
+            return False
+        
+        # Special handling for LF items (original camera files)
+        if is_lf_item:
+            # LF items always go to "Awaiting User Input" - they can never be processed automatically
+            evaluate_lf_metadata_quality(combined_metadata, record_id, token, footage_id)
             return False
         
         # Use simplified local evaluator (no URL-aware logic needed)
@@ -321,6 +331,30 @@ def evaluate_metadata_quality(record_data, token, record_id=None):
             write_to_dev_console(record_id, token, fallback_msg)
         
         return fallback_result
+
+def evaluate_lf_metadata_quality(combined_metadata, record_id, token, footage_id):
+    """Special metadata evaluation for LF items (original camera files)."""
+    try:
+        # LF items ALWAYS require user input - we can never automatically determine enough
+        # about original camera files to process them without human intervention
+        
+        console_msg = f"LF Metadata Evaluation: ⏳ AWAITING USER INPUT\n"
+        console_msg += f"Original Camera File: {footage_id}\n"
+        console_msg += f"Reason: LF items (original camera files) always require manual metadata input\n"
+        console_msg += f"Action: Setting to 'Awaiting User Input' for manual processing\n"
+        console_msg += f"Available metadata: {len(combined_metadata.strip())} characters"
+        
+        write_to_dev_console(record_id, token, console_msg)
+        
+        # LF items NEVER pass automatic evaluation - they always need user input
+        return False
+        
+    except Exception as e:
+        console_msg = f"LF Metadata Evaluation: ❌ ERROR\nException: {str(e)}\nSetting to Awaiting User Input..."
+        write_to_dev_console(record_id, token, console_msg)
+        
+        # Even on error, LF items should go to user input
+        return False
 
 def write_to_dev_console(record_id, token, message):
     """Write a message to the AI_DevConsole field."""
@@ -410,18 +444,26 @@ def update_frame_statuses_for_footage(footage_id, token, new_status, max_retries
             )
             
             if response.status_code == 404:
+                tprint(f"  -> No frames found for {footage_id}")
                 return True  # No frames found
             
             response.raise_for_status()
             records = response.json()['response']['data']
             
             if not records:
+                tprint(f"  -> No frame records found for {footage_id}")
                 return True
+            
+            tprint(f"  -> Found {len(records)} frames to update for {footage_id}")
             
             # Update each frame record
             updated_count = 0
+            failed_count = 0
             for record in records:
                 frame_record_id = record['recordId']
+                frame_id = record['fieldData'].get(FIELD_MAPPING["frame_id"], f"Frame_{frame_record_id}")
+                current_frame_status = record['fieldData'].get(FIELD_MAPPING["frame_status"], "Unknown")
+                
                 try:
                     payload = {"fieldData": {FIELD_MAPPING["frame_status"]: new_status}}
                     frame_response = requests.patch(
@@ -434,22 +476,38 @@ def update_frame_statuses_for_footage(footage_id, token, new_status, max_retries
                     
                     if frame_response.status_code == 401:
                         current_token = config.get_token()
-                        continue
+                        # Retry this frame with new token
+                        frame_response = requests.patch(
+                            config.url(f"layouts/FRAMES/records/{frame_record_id}"),
+                            headers=config.api_headers(current_token),
+                            json=payload,
+                            verify=False,
+                            timeout=30
+                        )
                     
                     frame_response.raise_for_status()
                     updated_count += 1
+                    tprint(f"  -> ✅ {frame_id}: {current_frame_status} → {new_status}")
                     
                 except Exception as e:
+                    failed_count += 1
+                    tprint(f"  -> ❌ {frame_id}: Failed to update from '{current_frame_status}' to '{new_status}': {e}")
                     continue  # Skip failed updates
             
-            tprint(f"  -> Updated {updated_count}/{len(records)} frame records to '{new_status}'")
-            return True
+            tprint(f"  -> Frame status update summary for {footage_id}: {updated_count} updated, {failed_count} failed")
+            
+            if failed_count > 0:
+                tprint(f"  -> ⚠️ {footage_id}: Some frame updates failed - may need manual intervention")
+            
+            return updated_count > 0  # Return True if at least one frame was updated
             
         except Exception as e:
+            tprint(f"  -> ❌ Error in update_frame_statuses_for_footage for {footage_id}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
     
+    tprint(f"  -> ❌ Failed to update frame statuses for {footage_id} after {max_retries} attempts")
     return False
 
 def process_polling_target(target, token, poll_stats):
@@ -486,8 +544,15 @@ def process_polling_target(target, token, poll_stats):
         footage_id = record["footage_id"]
         record_data = record["record_data"]
         
-        # Check conditional URL scraping (always scrape if URL exists)
+        # Check conditional URL scraping (always scrape if URL exists, except for LF items)
         if target.get("conditional") and target.get("check_url_only"):
+            # LF items should go to Awaiting User Input instead of URL scraping
+            if footage_id.startswith("LF"):
+                tprint(f"  -> {footage_id}: LF item - setting to Awaiting User Input (requires manual processing)")
+                update_status(record["record_id"], token, "Awaiting User Input")
+                update_frame_statuses_for_footage(footage_id, token, "Awaiting User Input")
+                continue
+            
             url = record_data.get(FIELD_MAPPING["url"], '')
             has_url = bool(url and url.strip())
             
@@ -570,7 +635,7 @@ def process_polling_target(target, token, poll_stats):
                                 frame_ready_count += 1
                         
                         if frame_ready_count == 0:
-                            tprint(f"  -> {footage_id}: Frames not at resume status - waiting for client-side trigger")
+                            tprint(f"⏳ {footage_id}: Frames not at resume status - waiting for client-side trigger")
                             continue
                         else:
                             tprint(f"  -> {footage_id}: Ready to resume - user has added metadata and frames are ready")
@@ -1115,8 +1180,7 @@ def process_footage_task(task, token):
                 if success:
                     steps_completed += 1
                     current_status = "7 - Generating Embeddings"
-                    # After step 6, update all child frames to step 5
-                    update_frame_statuses_for_footage(footage_id, token, "5 - Generating Embeddings")
+                    # Frame status update is handled in run_footage_script function
                     break  # Final step completed
                 else:
                     break
@@ -1126,6 +1190,14 @@ def process_footage_task(task, token):
         
         # Special case: Metadata evaluation AFTER step 4 (URL scraping)
         elif current_status == "4 - Scraping URL":
+            # Handle LF items that somehow reached this step
+            if footage_id.startswith("LF"):
+                tprint(f"  -> {footage_id}: LF item reached URL scraping step - setting to Awaiting User Input")
+                update_status(task["record_id"], token, "Awaiting User Input")
+                update_frame_statuses_for_footage(footage_id, token, "Awaiting User Input")
+                steps_completed += 1
+                break
+            
             # Get fresh record data to include any scraped content
             try:
                 response = requests.get(
@@ -1166,6 +1238,11 @@ def process_footage_task(task, token):
         
         # Special case: Handle user-resumed items
         elif current_status == "Awaiting User Input":
+            # LF items should never automatically resume - they always need manual intervention
+            if footage_id.startswith("LF"):
+                tprint(f"⏳ {footage_id}: LF item in Awaiting User Input - requires manual processing, keeping in current status")
+                break
+            
             metadata_quality_good = evaluate_metadata_quality(record_data, token, task["record_id"])
             
             if not metadata_quality_good:
@@ -1234,6 +1311,14 @@ def process_footage_task(task, token):
                 "2 - Thumbnails Complete": ("footage_autolog_03_create_frames.py", "3 - Creating Frames"),
                 "3 - Creating Frames": ("footage_autolog_04_scrape_url.py", "4 - Scraping URL"),
             }
+            
+            # Special handling for LF items - set to Awaiting User Input
+            if current_status == "3 - Creating Frames" and footage_id.startswith("LF"):
+                tprint(f"  -> {footage_id}: LF item - setting to Awaiting User Input (requires manual processing)")
+                update_status(task["record_id"], token, "Awaiting User Input")
+                update_frame_statuses_for_footage(footage_id, token, "Awaiting User Input")
+                steps_completed += 1
+                break  # LF items always stop here for manual input
             
             if current_status in status_map:
                 script, next_status = status_map[current_status]
@@ -1369,20 +1454,31 @@ def run_footage_script(footage_id, script_name, next_status, final_status, token
     """Run a footage script and update status."""
     try:
         # Update status immediately
+        tprint(f"🔄 {footage_id}: Updating status to '{next_status}'")
         update_status(record_id, token, next_status)
         
         # Run script
+        tprint(f"🚀 {footage_id}: Running {script_name}")
         success, error_msg = run_single_script(script_name, footage_id, token, 300)
         
         if success:
-            tprint(f"✅ {footage_id}: {script_name} completed")
+            tprint(f"✅ {footage_id}: {script_name} completed successfully")
             
             # Update to final status if specified (for step 6)
             if final_status:
+                tprint(f"🔄 {footage_id}: Script completed, updating to final status '{final_status}'")
                 update_status(record_id, token, final_status)
+                
                 # Move all child frames to next step
-                update_frame_statuses_for_footage(footage_id, token, "5 - Generating Embeddings")
-                tprint(f"🔄 {footage_id}: Moved to {final_status}, frames to 5 - Generating Embeddings")
+                tprint(f"🔄 {footage_id}: Moving all child frames to '5 - Generating Embeddings'")
+                frame_update_success = update_frame_statuses_for_footage(footage_id, token, "5 - Generating Embeddings")
+                
+                if frame_update_success:
+                    tprint(f"✅ {footage_id}: Successfully moved to {final_status}, frames to 5 - Generating Embeddings")
+                else:
+                    tprint(f"❌ {footage_id}: Failed to update frame statuses - frames may still be stuck at '4 - Audio Transcribed'")
+            else:
+                tprint(f"✅ {footage_id}: Script completed, no final status to set")
             
             return True
         else:

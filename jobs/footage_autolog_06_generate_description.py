@@ -3,6 +3,7 @@ import sys, os, json
 import warnings
 from pathlib import Path
 import requests
+from datetime import datetime
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
 
@@ -91,6 +92,44 @@ def find_frames_for_footage(token, footage_id):
     except Exception as e:
         print(f"  -> Error finding frame records: {e}")
         return []
+
+def get_current_dev_console(record_id, token, layout):
+    """Get the current AI_DevConsole content from a record."""
+    try:
+        response = requests.get(
+            config.url(f"layouts/{layout}/records/{record_id}"),
+            headers=config.api_headers(token),
+            verify=False,
+            timeout=30
+        )
+        response.raise_for_status()
+        record_data = response.json()['response']['data'][0]['fieldData']
+        return record_data.get("AI_DevConsole", "")
+    except Exception as e:
+        print(f"  -> WARNING: Failed to get AI_DevConsole: {e}")
+        return ""
+
+def write_to_dev_console(record_id, token, message):
+    """Write a message to the AI_DevConsole field."""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        console_entry = f"[{timestamp}] {message}"
+        
+        # Get current console content to append rather than overwrite
+        current_console = get_current_dev_console(record_id, token, "FOOTAGE")
+        
+        # Append new message
+        if current_console:
+            new_console = current_console + "\n\n" + console_entry
+        else:
+            new_console = console_entry
+        
+        # Update the AI_DevConsole field
+        field_data = {"AI_DevConsole": new_console}
+        config.update_record(token, "FOOTAGE", record_id, field_data)
+        
+    except Exception as e:
+        print(f"  -> WARNING: Failed to write to AI_DevConsole: {e}")
 
 def update_status(record_id, token, new_status, max_retries=3):
     """Update the AutoLog_Status field with retry logic."""
@@ -305,6 +344,12 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         else:
             prompt_text = f"Generate a concise, descriptive title and comprehensive description for this video footage based on the frame-by-frame analysis provided.\n\n{silent_note}\n\nFrame-level data:\n{csv_data}"
         
+        # Log the prompt to AI_DevConsole for prompt engineering visibility
+        footage_record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
+        if footage_record_id:
+            prompt_log_message = f"AI Prompt Engineering - Video Description Generation\n{prompt_text}"
+            write_to_dev_console(footage_record_id, token, prompt_log_message)
+
         # Make OpenAI API call
         print(f"  -> Calling OpenAI API for description generation...")
         response = client.chat_completions_create(

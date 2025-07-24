@@ -3,6 +3,7 @@ import sys, os, subprocess, json, base64, time
 import warnings
 from pathlib import Path
 import requests
+from datetime import datetime
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -136,6 +137,44 @@ def generate_thumbnail_from_timecode(file_path, timecode_formatted, frame_id):
         print(f"  -> Error generating thumbnail: {e}")
         return None
 
+def get_footage_dev_console(record_id, token):
+    """Get the current AI_DevConsole content from a footage record."""
+    try:
+        response = requests.get(
+            config.url(f"layouts/FOOTAGE/records/{record_id}"),
+            headers=config.api_headers(token),
+            verify=False,
+            timeout=30
+        )
+        response.raise_for_status()
+        record_data = response.json()['response']['data'][0]['fieldData']
+        return record_data.get("AI_DevConsole", "")
+    except Exception as e:
+        print(f"  -> WARNING: Failed to get footage AI_DevConsole: {e}")
+        return ""
+
+def write_to_footage_dev_console(record_id, token, message):
+    """Write a message to the AI_DevConsole field of a footage record."""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        console_entry = f"[{timestamp}] {message}"
+        
+        # Get current console content to append rather than overwrite
+        current_console = get_footage_dev_console(record_id, token)
+        
+        # Append new message
+        if current_console:
+            new_console = current_console + "\n\n" + console_entry
+        else:
+            new_console = console_entry
+        
+        # Update the AI_DevConsole field
+        field_data = {"AI_DevConsole": new_console}
+        config.update_record(token, "FOOTAGE", record_id, field_data)
+        
+    except Exception as e:
+        print(f"  -> WARNING: Failed to write to footage AI_DevConsole: {e}")
+
 def setup_openai_client(token):
     """Set up OpenAI client with API keys from SystemGlobals."""
     try:
@@ -212,6 +251,22 @@ def generate_caption(footage_data, thumb_path, token):
         print(f"  -> ═══ FULL PROMPT BEING USED ═══")
         print(f"{prompt_text}")
         print(f"  -> ═══ END OF PROMPT ═══")
+        
+        # Log the prompt to parent footage record's AI_DevConsole (only once per footage)
+        # This helps with prompt engineering visibility for frame caption generation
+        try:
+            footage_record_id = config.find_record_id(token, "FOOTAGE", {"INFO_FTG_ID": f"=={info_ftg_id}"})
+            if footage_record_id:
+                # Check if prompt has already been logged for this footage to avoid duplicates
+                current_console = get_footage_dev_console(footage_record_id, token)
+                if not current_console or "AI Prompt Engineering - Frame Caption Generation" not in current_console:
+                    prompt_log_message = f"AI Prompt Engineering - Frame Caption Generation\n{prompt_text}"
+                    write_to_footage_dev_console(footage_record_id, token, prompt_log_message)
+                    print(f"  -> Logged prompt to footage console for engineering visibility")
+                else:
+                    print(f"  -> Prompt already logged to footage console, skipping duplicate")
+        except Exception as e:
+            print(f"  -> WARNING: Failed to log prompt to footage console: {e}")
         
         # Read and encode image
         with open(thumb_path, "rb") as f:
