@@ -8,7 +8,7 @@ Use this information for context:
 
 {AUDIO_STATUS}
 
-You will be given frame-level visual descriptions and audio transcripts (empty transcript = silent segment), from this information please infer what the longer video file is and/or is about. Create a catalog entry with a descriptive title, comprehensive description, and date extraction.
+You will be given frame-level visual descriptions and audio transcripts (empty transcript = silent segment), from this information please infer what the longer video file is and/or is about. Create a catalog entry with a descriptive title, comprehensive description, and date extraction. Maintain important shot information such as shot types (close-up, medium, wide, etc.), depth of field, and camera movements detected in the frame data. Note the time of day when observable without making assumptions. Analyze the sequence of frames to infer camera movements such as pans (left/right), tilts (up/down), zooms (in/out), dolly shots, tracking shots, or static shots based on how the visual content changes across frames.
 
 Write 2–4 sentences of factual, neutral description. Stick to observable details (who/what/where/when). Avoid mood-laden or stylistic adjectives (e.g., "haunting," "dramatic," "beautiful"). No speculation, inference of emotion, or cinematic language.
 
@@ -31,7 +31,8 @@ Always include the date the footage was taken as the last sentence. If there is 
 Frame-level data:
 {FRAME_DATA}
 
-Return your answer as a JSON object with exactly these three fields:
+Return your answer as a JSON object with exactly these four fields:
 - `title`: [3–8 word descriptive title]
 - `description`: [2–4 sentence catalog description with natural date formatting at the end]
 - `date`: [The date in structured format: YYYY/MM/DD, or YYYY/MM, or just YYYY. If no date available, return an empty string.]
+- `audio_type`: [Return "MOS" if the footage is silent/has no audio, or "Sound" if audio is present]

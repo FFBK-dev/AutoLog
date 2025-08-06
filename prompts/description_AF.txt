@@ -10,7 +10,7 @@ Context:
 
 {AUDIO_STATUS}
 
-You will be given frame-level visual descriptions and audio transcripts (empty transcript = silent footage). Create a catalog entry with a descriptive title, comprehensive description, and date extraction.
+You will be given frame-level visual descriptions and audio transcripts (empty transcript = silent footage). Create a catalog entry with a descriptive title, comprehensive description, and date extraction. If the footage appears to be a montage of multiple different clips or scenes, specify this in your description. Also identify the type of footage: documentary, fictional film, newsreel, or found footage.
 
 Write 2–4 sentences of factual, neutral description. Stick to observable details (who/what/where/when). Avoid mood-laden or stylistic adjectives (e.g., "haunting," "dramatic," "beautiful"). No speculation, inference of emotion, or cinematic language.
 
@@ -33,7 +33,8 @@ Always include the date the footage was taken as the last sentence. If there is 
 Frame-level data:
 {FRAME_DATA}
 
-Return your answer as a JSON object with exactly these three fields:
+Return your answer as a JSON object with exactly these four fields:
 - `title`: [3–8 word descriptive title]
 - `description`: [2–4 sentence catalog description with natural date formatting at the end]
 - `date`: [The date in structured format: YYYY/MM/DD, or YYYY/MM, or just YYYY. If no date available, return an empty string.]
+- `audio_type`: [Return "MOS" if the footage is silent/has no audio, or "Sound" if audio is present]

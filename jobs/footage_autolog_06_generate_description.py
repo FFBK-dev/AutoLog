@@ -21,6 +21,7 @@ FIELD_MAPPING = {
     "metadata": "INFO_Metadata",
     "duration": "SPECS_File_Duration_Timecode",
     "ai_prompt": "AI_Prompt",
+    "audio_type": "INFO_AudioType",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_status": "FRAMES_Status",
     "frame_id": "FRAMES_ID",
@@ -300,7 +301,7 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         frames_with_visuals = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_caption"], "").strip())
         
         if frames_with_visuals == 0:
-            return "No Visual Content", "This video appears to lack visual content data.", "", ""
+            return "No Visual Content", "This video appears to lack visual content data.", "", "MOS", ""
         
         # Build CSV data for analysis
         csv_lines = ["Frame,Timecode,Visual Description,Audio Transcript"]
@@ -361,24 +362,26 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         
         final_response = response.choices[0].message.content.strip()
         
-        # Parse title, description, and date from JSON response
-        title, description, date = parse_json_response(final_response)
+        # Parse title, description, date, and audio_type from JSON response
+        title, description, date, audio_type = parse_json_response(final_response)
         
         print(f"  -> Generated title: {title}")
         print(f"  -> Generated description: {len(description)} characters")
         print(f"  -> Generated date: {date}")
+        print(f"  -> Generated audio_type: {audio_type}")
         
-        return title, description, date, csv_data
+        return title, description, date, audio_type, csv_data
         
     except Exception as e:
         print(f"❌ Error generating video description: {e}")
-        return "", "", "", ""
+        return "", "", "", "MOS", ""
 
 def parse_json_response(response_text):
-    """Parse title, description, and date from JSON API response."""
+    """Parse title, description, date, and audio_type from JSON API response."""
     title = ""
     description = ""
     date = ""
+    audio_type = "MOS"  # Default to MOS
     
     try:
         print(f"  -> Raw API response: {response_text[:200]}...")  # Debug output
@@ -419,8 +422,9 @@ def parse_json_response(response_text):
             title = data.get('title', '').strip()
             description = data.get('description', '').strip()
             date = data.get('date', '').strip()
+            audio_type = data.get('audio_type', 'MOS').strip()
             
-            print(f"  -> JSON parsing successful: title='{title[:50]}...', description='{description[:50]}...', date='{date}'")
+            print(f"  -> JSON parsing successful: title='{title[:50]}...', description='{description[:50]}...', date='{date}', audio_type='{audio_type}'")
             
         except json.JSONDecodeError as e:
             print(f"  -> JSON decode failed: {e}")

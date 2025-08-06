@@ -127,6 +127,52 @@ curl -X GET "http://localhost:8000/jobs" \
   -H "x-api-key: supersecret"
 ```
 
+### Metadata Bridge API (Avid Media Composer Integration)
+
+The Metadata Bridge provides **bidirectional metadata synchronization** between FileMaker Pro and Avid Media Composer:
+
+#### Import Metadata (FileMaker Pro → Avid Media Composer)
+```bash
+# Retrieve metadata from FileMaker Pro for use in Avid Media Composer
+curl -X POST "http://localhost:8000/metadata-bridge/query" \
+  -H "x-api-key: supersecret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "media_type": "stills",
+    "identifiers": ["STILLS_001", "STILLS_002"]
+  }'
+```
+
+#### Export Metadata (Avid Media Composer → FileMaker Pro)
+```bash
+# Send metadata from Avid Media Composer to update FileMaker Pro records
+curl -X POST "http://localhost:8000/metadata-bridge/export" \
+  -H "x-api-key: supersecret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "media_type": "stills",
+    "assets": [
+      {
+        "identifier": "STILLS_001",
+        "mob_id": "mob_12345",
+        "media_type": "stills",
+        "metadata": {
+          "description": "Updated description from Avid",
+          "tags": "updated, tags, from, avid",
+          "source": "Updated Source"
+        }
+      }
+    ]
+  }'
+```
+
+**Supported Media Types:**
+- `stills` - Still images (identifier: `INFO_STILLS_ID`)
+- `archival` - Archival footage (identifier: `INFO_Filename`)
+- `live_footage` - Live footage (identifier: `INFO_Filename`)
+
+**For detailed API documentation, see:** [`METADATA_BRIDGE_API.md`](METADATA_BRIDGE_API.md)
+
 ### Image Enhancement Utilities
 
 #### Upscale Image

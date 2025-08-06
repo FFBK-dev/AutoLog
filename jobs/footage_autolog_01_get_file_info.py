@@ -303,11 +303,11 @@ def extract_source_from_path(file_path, footage_id):
         print(f"  -> Error extracting source: {e}")
         return ""
 
-def get_filename_without_extension(file_path):
-    """Get filename without extension."""
+def get_filename_with_extension(file_path):
+    """Get filename with extension."""
     try:
-        filename = Path(file_path).stem
-        print(f"  -> Filename without extension: {filename}")
+        filename = Path(file_path).name
+        print(f"  -> Filename with extension: {filename}")
         return filename
     except Exception as e:
         print(f"  -> Error getting filename: {e}")
@@ -470,8 +470,8 @@ if __name__ == "__main__":
         # Step 4: Extract source from path
         source = extract_source_from_path(file_path, footage_id)
         
-        # Step 5: Get filename without extension (use as archival ID)
-        filename = get_filename_without_extension(file_path)
+        # Step 5: Get filename with extension (use as archival ID)
+        filename = get_filename_with_extension(file_path)
         archival_id = filename  # Archival ID is same as filename
         
         # Clean archival ID for URL construction (but keep original for storage)

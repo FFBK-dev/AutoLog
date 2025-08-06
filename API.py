@@ -56,12 +56,26 @@ class JobTracker:
             }
             return job_id
     
-    def complete_job(self, job_id: str, success: bool = True):
+    def complete_job(self, job_id: str, success: bool = True, results: Dict[str, Any] = None):
         with self.lock:
             if job_id in self.current_jobs:
                 self.current_jobs[job_id]["status"] = "completed" if success else "failed"
                 self.current_jobs[job_id]["completed_at"] = datetime.now()
+                if results:
+                    self.current_jobs[job_id]["results"] = results
                 self.jobs_completed += 1
+    
+    def get_job_status(self, job_id: str) -> Dict[str, Any]:
+        with self.lock:
+            if job_id in self.current_jobs:
+                job_info = self.current_jobs[job_id].copy()
+                # Convert datetime objects to ISO strings for JSON serialization
+                job_info["submitted_at"] = job_info["submitted_at"].isoformat()
+                if "completed_at" in job_info:
+                    job_info["completed_at"] = job_info["completed_at"].isoformat()
+                return job_info
+            else:
+                return None
     
     def get_stats(self) -> Dict[str, Any]:
         with self.lock:
@@ -76,8 +90,13 @@ class JobTracker:
 
 job_tracker = JobTracker()
 
-# API Key validation (disabled for internal use)
+# API Key validation (optional for backward compatibility)
 def check_key(x_api_key: str = Header(None)):
+    # Allow requests without API key (backward compatibility)
+    if x_api_key is None:
+        return None
+    
+    # If API key is provided, it must match
     expected_key = os.getenv('FM_AUTOMATION_KEY', 'supersecret')
     if x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -182,8 +201,47 @@ def run_job_with_tracking(job_id: str, cmd: List[str]):
             if result.stderr:
                 logging.error(f"❌ {job_id} stderr: {result.stderr}")
         
-        # Final summary
-        if return_code == 0:
+        # Final summary and results capture
+        job_results = None
+        success = return_code == 0
+        
+        # For avid-search and avid-find-similar jobs, capture JSON results from stdout
+        if success and (job_id.startswith("avid-search") or job_id.startswith("avid-find-similar")) and not is_polling_script:
+            try:
+                if result.stdout:
+                    # Look for JSON results in the output
+                    lines = result.stdout.split('\n')
+                    json_capture = False
+                    json_lines = []
+                    
+                    for line in lines:
+                        if line.strip() == "📊 JSON Results:":
+                            json_capture = True
+                            continue
+                        elif json_capture:
+                            if line.strip() and line.strip().startswith('{'):
+                                json_lines.append(line)
+                            elif line.strip() and not line.strip().startswith('{') and json_lines:
+                                json_lines.append(line)
+                            elif not line.strip() and json_lines:
+                                break
+                    
+                    if json_lines:
+                        json_str = '\n'.join(json_lines)
+                        job_results = json.loads(json_str)
+                        # Handle different result formats for different job types
+                        if 'ranked_results' in job_results:
+                            result_count = len(job_results.get('ranked_results', []))
+                        elif 'similar_items' in job_results:
+                            result_count = len(job_results.get('similar_items', []))
+                        else:
+                            result_count = 0
+                        logging.info(f"📊 {job_id} - Captured {result_count} results")
+                        
+            except Exception as json_e:
+                logging.warning(f"⚠️ {job_id} - Could not parse JSON results: {json_e}")
+        
+        if success:
             logging.info(f"✅ {job_id} completed successfully")
         else:
             logging.error(f"❌ {job_id} failed with exit code {return_code}")
@@ -194,15 +252,17 @@ def run_job_with_tracking(job_id: str, cmd: List[str]):
         if process:
             process.kill()
             process.wait()
+        success = False
     except Exception as e:
         logging.error(f"❌ {job_id} error: {str(e)}")
         if process:
             process.kill()
             process.wait()
+        success = False
     finally:
         if process and process.stdout:
             process.stdout.close()
-        job_tracker.complete_job(job_id)
+        job_tracker.complete_job(job_id, success, job_results)
 
 @app.get("/openai/usage")
 def get_openai_usage():
@@ -312,7 +372,7 @@ def load_openai_for_status():
         return {"error": f"Failed to load OpenAI status: {str(e)}"}
 
 # Existing job execution endpoints (unchanged)
-@app.post("/run/{job}")
+@app.post("/run/{job}", dependencies=[Depends(check_key)])
 def run_job(job: str, background_tasks: BackgroundTasks, payload: dict = Body({})):
     """Execute a job with tracking and background processing."""
     
@@ -458,6 +518,16 @@ def list_jobs():
     
     return {"jobs": sorted(jobs)}
 
+@app.get("/job/{job_id}", dependencies=[Depends(check_key)])
+def get_job_status(job_id: str):
+    """Get the status and details of a specific job."""
+    job_info = job_tracker.get_job_status(job_id)
+    
+    if job_info is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    
+    return job_info
+
 # Health check endpoint
 # Polling workflow endpoint
 @app.post("/poll/footage")
@@ -555,6 +625,128 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
         "status": "running",
         "message": f"Polling workflow started for {poll_duration}s with {poll_interval}s intervals"
     }
+
+# Metadata Bridge Endpoints for Avid Media Composer Integration
+
+@app.post("/metadata-bridge/query", dependencies=[Depends(check_key)])
+def metadata_bridge_query(payload: dict = Body(...)):
+    """
+    Metadata bridge endpoint for FileMaker Pro → Avid Media Composer (metadata-to-avid)
+    
+    Accepts: { "media_type": "stills|archival|live_footage", "identifiers": ["id1", "id2"] }
+    Returns: Metadata for the specified identifiers
+    """
+    try:
+        # Validate payload
+        media_type = payload.get('media_type')
+        identifiers = payload.get('identifiers', [])
+        
+        if not media_type:
+            raise HTTPException(status_code=400, detail="Missing media_type in payload")
+        
+        if not identifiers:
+            raise HTTPException(status_code=400, detail="Missing identifiers in payload")
+        
+        # Create temporary payload file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(payload, f)
+            payload_file = f.name
+        
+        try:
+            # Execute metadata-to-avid script (FileMaker Pro → Avid Media Composer)
+            cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-to-avid.py"), payload_file]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60  # 60 second timeout for metadata queries
+            )
+            
+            if result.returncode == 0:
+                # Parse the JSON response
+                response_data = json.loads(result.stdout)
+                return response_data
+            else:
+                # Try to parse error from stderr or stdout
+                error_output = result.stderr if result.stderr else result.stdout
+                try:
+                    error_data = json.loads(error_output)
+                    raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
+                    
+        finally:
+            # Clean up temporary file
+            if os.path.exists(payload_file):
+                os.unlink(payload_file)
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"❌ Metadata bridge query error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/metadata-bridge/export", dependencies=[Depends(check_key)])
+def metadata_bridge_export(payload: dict = Body(...)):
+    """
+    Metadata bridge endpoint for Avid Media Composer → FileMaker Pro (metadata-from-avid)
+    
+    Accepts: { "media_type": "stills|archival|live_footage", "assets": [...] }
+    Returns: Success confirmation with processing results
+    """
+    try:
+        # Validate payload
+        media_type = payload.get('media_type')
+        assets = payload.get('assets', [])
+        
+        if not media_type:
+            raise HTTPException(status_code=400, detail="Missing media_type in payload")
+        
+        if not assets:
+            raise HTTPException(status_code=400, detail="Missing assets in payload")
+        
+        # Create temporary payload file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(payload, f)
+            payload_file = f.name
+        
+        try:
+            # Execute metadata-from-avid script
+            cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-from-avid.py"), payload_file]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minute timeout for metadata exports
+            )
+            
+            if result.returncode == 0:
+                # Parse the JSON response
+                response_data = json.loads(result.stdout)
+                return response_data
+            else:
+                # Try to parse error from stderr or stdout
+                error_output = result.stderr if result.stderr else result.stdout
+                try:
+                    error_data = json.loads(error_output)
+                    raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
+                    
+        finally:
+            # Clean up temporary file
+            if os.path.exists(payload_file):
+                os.unlink(payload_file)
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"❌ Metadata bridge export error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/health")
 def health_check():

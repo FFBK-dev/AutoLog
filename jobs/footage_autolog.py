@@ -952,86 +952,189 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
         cycle_failed = 0
         
         try:
-            # Get ALL footage records that need processing
-            footage_response = requests.post(
-                config.url("layouts/FOOTAGE/_find"),
-                headers=config.api_headers(token),
-                json={
-                    "query": [{"INFO_FTG_ID": "*"}],
-                    "limit": 1000
-                },
-                verify=False,
-                timeout=30
-            )
+            # SCALABLE APPROACH: Query by specific statuses that need processing
+            # This will work efficiently even with 100K+ records
             
-            # Get ALL frame records that need processing  
-            frames_response = requests.post(
-                config.url("layouts/FRAMES/_find"),
-                headers=config.api_headers(token),
-                json={
-                    "query": [{"FRAMES_ID": "*"}],
-                    "limit": 1000
-                },
-                verify=False,
-                timeout=30
-            )
+            # Define all footage statuses that need processing (NOT terminal states)
+            footage_processing_statuses = [
+                "0 - Pending File Info",
+                "1 - File Info Complete", 
+                "2 - Thumbnails Complete",
+                "3 - Creating Frames",
+                "4 - Scraping URL",
+                "5 - Processing Frame Info",
+                "6 - Generating Description",
+                "Force Resume",
+                "Awaiting User Input"  # May resume if metadata improved
+            ]
+            
+            # Define all frame statuses that need processing
+            frame_processing_statuses = [
+                "1 - Pending Thumbnail",
+                "2 - Thumbnail Complete",
+                "3 - Caption Generated", 
+                "4 - Audio Transcribed",
+                "Force Resume"
+            ]
+            
+            # Get footage records by processing statuses (much more efficient)
+            footage_records = []
+            for status in footage_processing_statuses:
+                try:
+                    # Use pagination for statuses that might have many records
+                    offset = 0
+                    batch_size = 500
+                    status_total = 0
+                    
+                    while True:
+                        # FileMaker API requires offset > 0, so omit it for first query
+                        query_params = {
+                            "query": [{"AutoLog_Status": status}],
+                            "limit": batch_size
+                        }
+                        if offset > 0:
+                            query_params["offset"] = offset
+                        
+                        footage_response = requests.post(
+                            config.url("layouts/FOOTAGE/_find"),
+                            headers=config.api_headers(token),
+                            json=query_params,
+                            verify=False,
+                            timeout=30
+                        )
+                        
+                        if footage_response.status_code == 200:
+                            response_data = footage_response.json()['response']
+                            status_records = response_data['data']
+                            footage_records.extend(status_records)
+                            status_total += len(status_records)
+                            
+                            # Check if we've retrieved all records for this status
+                            if len(status_records) < batch_size:
+                                break  # No more records
+                            
+                            offset += len(status_records)  # Move offset by actual records returned
+                            
+                            # Safety limit to prevent infinite loops (max 10K records per status)
+                            if offset >= 10000:
+                                tprint(f"⚠️ Reached safety limit for status '{status}' - stopping pagination")
+                                break
+                                
+                        elif footage_response.status_code == 404:
+                            break  # No records for this status
+                        else:
+                            tprint(f"⚠️ Error querying footage status '{status}': {footage_response.status_code}")
+                            break
+                    
+                    if status_total > 0:
+                        tprint(f"📊 Found {status_total} footage records with status '{status}'")
+                        
+                except Exception as e:
+                    tprint(f"⚠️ Error querying footage status '{status}': {e}")
+                    continue
+            
+            # Get frame records by processing statuses (much more efficient)
+            frame_records = []
+            for status in frame_processing_statuses:
+                try:
+                    # Use pagination for statuses that might have many records
+                    offset = 0
+                    batch_size = 1000  # Larger batches for frames
+                    status_total = 0
+                    
+                    while True:
+                        # FileMaker API requires offset > 0, so omit it for first query
+                        query_params = {
+                            "query": [{"FRAMES_Status": status}],
+                            "limit": batch_size
+                        }
+                        if offset > 0:
+                            query_params["offset"] = offset
+                        
+                        frames_response = requests.post(
+                            config.url("layouts/FRAMES/_find"),
+                            headers=config.api_headers(token),
+                            json=query_params,
+                            verify=False,
+                            timeout=30
+                        )
+                        
+                        if frames_response.status_code == 200:
+                            response_data = frames_response.json()['response']
+                            status_records = response_data['data']
+                            frame_records.extend(status_records)
+                            status_total += len(status_records)
+                            
+                            # Check if we've retrieved all records for this status
+                            if len(status_records) < batch_size:
+                                break  # No more records
+                            
+                            offset += len(status_records)  # Move offset by actual records returned
+                            
+                            # Safety limit to prevent infinite loops (max 50K frame records per status)
+                            if offset >= 50000:
+                                tprint(f"⚠️ Reached safety limit for frame status '{status}' - stopping pagination")
+                                break
+                                
+                        elif frames_response.status_code == 404:
+                            break  # No records for this status
+                        else:
+                            tprint(f"⚠️ Error querying frame status '{status}': {frames_response.status_code}")
+                            break
+                    
+                    if status_total > 0:
+                        tprint(f"📊 Found {status_total} frame records with status '{status}'")
+                        
+                except Exception as e:
+                    tprint(f"⚠️ Error querying frame status '{status}': {e}")
+                    continue
             
             all_tasks = []
             
-            # Process footage records
-            if footage_response.status_code == 200:
-                footage_records = footage_response.json()['response']['data']
-                
-                for record in footage_records:
-                    footage_id = record['fieldData'].get(FIELD_MAPPING["footage_id"])
-                    current_status = record['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
-                    
-                    # Only include records that are NOT in terminal states
-                    if footage_id and current_status not in footage_terminal_states and current_status != "Unknown":
-                        all_tasks.append({
-                            "type": "footage",
-                            "id": footage_id,
-                            "record_id": record['recordId'],
-                            "current_status": current_status,
-                            "record_data": record['fieldData']
-                        })
+            # Build a map of footage statuses for frame dependency checking
+            footage_status_map = {}
+            for footage_record in footage_records:
+                footage_id = footage_record['fieldData'].get(FIELD_MAPPING["footage_id"])
+                footage_status = footage_record['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
+                if footage_id:
+                    footage_status_map[footage_id] = footage_status
             
-            # Process frame records
-            if frames_response.status_code == 200:
-                frame_records = frames_response.json()['response']['data']
+            # Process footage records into tasks
+            for record in footage_records:
+                footage_id = record['fieldData'].get(FIELD_MAPPING["footage_id"])
+                current_status = record['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
                 
-                # Build a map of footage statuses for efficiency
-                footage_status_map = {}
-                if footage_response.status_code == 200:
-                    footage_records = footage_response.json()['response']['data']
-                    for footage_record in footage_records:
-                        footage_id = footage_record['fieldData'].get(FIELD_MAPPING["footage_id"])
-                        footage_status = footage_record['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
-                        if footage_id:
-                            footage_status_map[footage_id] = footage_status
+                # Only include records that are NOT in terminal states
+                if footage_id and current_status not in footage_terminal_states and current_status != "Unknown":
+                    all_tasks.append({
+                        "type": "footage",
+                        "id": footage_id,
+                        "record_id": record['recordId'],
+                        "current_status": current_status,
+                        "record_data": record['fieldData']
+                    })
+            
+            # Process frame records into tasks
+            for record in frame_records:
+                frame_id = record['fieldData'].get(FIELD_MAPPING["frame_id"])
+                current_status = record['fieldData'].get(FIELD_MAPPING["frame_status"], "Unknown")
+                parent_id = record['fieldData'].get(FIELD_MAPPING["frame_parent_id"])
                 
-                for record in frame_records:
-                    frame_id = record['fieldData'].get(FIELD_MAPPING["frame_id"])
-                    current_status = record['fieldData'].get(FIELD_MAPPING["frame_status"], "Unknown")
-                    parent_id = record['fieldData'].get(FIELD_MAPPING["frame_parent_id"])
-                    
-                    # Skip frames if their parent has reached terminal success states
-                    if parent_id and parent_id in footage_status_map:
-                        parent_status = footage_status_map[parent_id]
-                        if parent_status in ["8 - Applying Tags", "9 - Complete"]:
-                            # Skip this frame - parent has completed workflow
-                            continue
-                    
-                    if frame_id and current_status not in frame_terminal_states and current_status != "Unknown":
-                        all_tasks.append({
-                            "type": "frame", 
-                            "id": frame_id,
-                            "record_id": record['recordId'],
-                            "current_status": current_status,
-                            "record_data": record['fieldData']
-                        })
-            elif frames_response.status_code != 404:  # 404 is expected when no frames exist
-                tprint(f"⚠️ Frame query error: status {frames_response.status_code}")
+                # Skip frames if their parent has reached terminal success states
+                if parent_id and parent_id in footage_status_map:
+                    parent_status = footage_status_map[parent_id]
+                    if parent_status in ["8 - Applying Tags", "9 - Complete"]:
+                        # Skip this frame - parent has completed workflow
+                        continue
+                
+                if frame_id and current_status not in frame_terminal_states and current_status != "Unknown":
+                    all_tasks.append({
+                        "type": "frame", 
+                        "id": frame_id,
+                        "record_id": record['recordId'],
+                        "current_status": current_status,
+                        "record_data": record['fieldData']
+                    })
             
             tprint(f"📊 Found {len(all_tasks)} total records to process")
             
