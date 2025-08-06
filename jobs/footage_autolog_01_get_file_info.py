@@ -26,6 +26,7 @@ FIELD_MAPPING = {
     "duration": "SPECS_File_Duration_Timecode",
     "dimensions": "SPECS_File_Dimensions",
     "frames": "SPECS_File_Frames",  # Added frame count field
+    "color_mode": "INFO_ColorMode",
     "archival_id": "INFO_Archival_ID",
     "source": "INFO_Source",
     "filename": "INFO_Filename"
@@ -238,6 +239,15 @@ def run_ffprobe(file_path):
         if 'width' in specs and 'height' in specs:
             extracted_specs['dimensions'] = f"{specs['width']}x{specs['height']}"
         
+        # Pixel format for color mode detection
+        if 'pix_fmt' in specs:
+            extracted_specs['pix_fmt'] = specs['pix_fmt']
+            print(f"  -> Found pixel format: {specs['pix_fmt']}")
+        
+        # Color space information (additional context)
+        if 'color_space' in specs and specs['color_space'] != 'N/A':
+            extracted_specs['color_space'] = specs['color_space']
+        
         # Duration (from format section)
         if 'duration' in specs:
             duration_str = specs['duration']
@@ -313,6 +323,24 @@ def get_filename_with_extension(file_path):
         print(f"  -> Error getting filename: {e}")
         return ""
 
+def clean_archival_id_for_storage(filename, source):
+    """Clean archival ID for storage in FileMaker - removes extension and source prefixes."""
+    if not filename:
+        return ""
+    
+    # Remove file extension
+    archival_id = Path(filename).stem  # Gets filename without extension
+    
+    # Apply source-specific cleaning using existing utility
+    cleaned_id = clean_archival_id_for_url(archival_id, source)
+    
+    print(f"  -> Cleaned archival ID for storage:")
+    print(f"     Original filename: {filename}")
+    print(f"     Without extension: {archival_id}")
+    print(f"     After prefix cleaning: {cleaned_id}")
+    
+    return cleaned_id
+
 def seconds_to_timecode(seconds, framerate=24.0):
     """Convert seconds to HH:MM:SS:FF timecode format."""
     try:
@@ -360,6 +388,103 @@ def calculate_end_timecode(start_tc, duration_seconds, framerate=24.0):
     except Exception as e:
         print(f"  -> Error calculating end timecode: {e}")
         return "00:00:00:00"
+
+def determine_color_mode(pix_fmt, color_space=None):
+    """Determine if video is color or black & white based on pixel format."""
+    if not pix_fmt:
+        print(f"  -> No pixel format available, defaulting to Color")
+        return "Color"
+    
+    # Common grayscale/monochrome pixel formats
+    grayscale_formats = {
+        'gray', 'gray8', 'gray16', 'gray16le', 'gray16be',
+        'monow', 'monob', 'y400a', 'ya8', 'ya16le', 'ya16be'
+    }
+    
+    # Check if pixel format indicates grayscale
+    pix_fmt_lower = pix_fmt.lower()
+    
+    # Direct grayscale format check
+    if pix_fmt_lower in grayscale_formats:
+        print(f"  -> Detected B&W based on pixel format: {pix_fmt}")
+        return "B/W"
+    
+    # Check for grayscale indicators in format name
+    grayscale_indicators = ['gray', 'mono', 'y400']
+    if any(indicator in pix_fmt_lower for indicator in grayscale_indicators):
+        print(f"  -> Detected B&W based on pixel format pattern: {pix_fmt}")
+        return "B/W"
+    
+    # Additional check using color space if available
+    if color_space and color_space.lower() in ['bt709', 'bt601', 'bt2020']:
+        print(f"  -> Detected Color based on color space: {color_space}")
+        return "Color"
+    
+    # Common color formats (most modern video)
+    color_formats = {
+        'yuv420p', 'yuv422p', 'yuv444p', 'rgb24', 'bgr24', 'rgba', 'bgra',
+        'yuv420p10le', 'yuv422p10le', 'yuv444p10le', 'nv12', 'nv21'
+    }
+    
+    if pix_fmt_lower in color_formats:
+        print(f"  -> Detected Color based on pixel format: {pix_fmt}")
+        return "Color"
+    
+    # Default assumption for unknown formats (most video is color)
+    print(f"  -> Unknown pixel format '{pix_fmt}', defaulting to Color")
+    return "Color"
+
+def analyze_thumbnail_for_color(thumbnail_path):
+    """Analyze a thumbnail image to determine if it's color or B&W (backup method)."""
+    try:
+        from PIL import Image
+        import numpy as np
+        
+        if not os.path.exists(thumbnail_path):
+            print(f"  -> Thumbnail not found: {thumbnail_path}")
+            return None
+        
+        # Load image
+        with Image.open(thumbnail_path) as img:
+            # Convert to RGB if needed
+            if img.mode not in ['RGB', 'RGBA']:
+                img = img.convert('RGB')
+            
+            # Convert to numpy array
+            img_array = np.array(img)
+            
+            # For RGB image, check if R, G, B channels are significantly different
+            if len(img_array.shape) == 3 and img_array.shape[2] >= 3:
+                r_channel = img_array[:, :, 0].astype(float)
+                g_channel = img_array[:, :, 1].astype(float)
+                b_channel = img_array[:, :, 2].astype(float)
+                
+                # Calculate variance between channels
+                rg_diff = np.var(r_channel - g_channel)
+                rb_diff = np.var(r_channel - b_channel)
+                gb_diff = np.var(g_channel - b_channel)
+                
+                # If channels are very similar, it's likely B&W
+                color_variance = (rg_diff + rb_diff + gb_diff) / 3
+                
+                # Threshold for determining B&W vs Color (can be tuned)
+                bw_threshold = 10.0  # Lower values = more sensitive to B&W
+                
+                if color_variance < bw_threshold:
+                    print(f"  -> Thumbnail analysis: B&W (color variance: {color_variance:.2f})")
+                    return "B/W"
+                else:
+                    print(f"  -> Thumbnail analysis: Color (color variance: {color_variance:.2f})")
+                    return "Color"
+        
+        return None
+        
+    except ImportError:
+        print(f"  -> PIL/numpy not available for thumbnail analysis")
+        return None
+    except Exception as e:
+        print(f"  -> Error analyzing thumbnail: {e}")
+        return None
 
 def find_url_from_source_and_archival_id(token, source, archival_id):
     """Find URL root from URLs layout based on source and combine with archival ID."""
@@ -470,11 +595,13 @@ if __name__ == "__main__":
         # Step 4: Extract source from path
         source = extract_source_from_path(file_path, footage_id)
         
-        # Step 5: Get filename with extension (use as archival ID)
+        # Step 5: Get filename with extension and create clean archival ID
         filename = get_filename_with_extension(file_path)
-        archival_id = filename  # Archival ID is same as filename
         
-        # Clean archival ID for URL construction (but keep original for storage)
+        # Create clean archival ID for storage (no extension, no prefixes)
+        archival_id = clean_archival_id_for_storage(filename, source)
+        
+        # Create cleaned archival ID for URL construction (may need additional cleaning)
         cleaned_archival_id = clean_archival_id_for_url(archival_id, source)
         if cleaned_archival_id != archival_id:
             print(f"  -> Cleaned archival ID for URL construction:")
@@ -524,6 +651,15 @@ if __name__ == "__main__":
         if video_specs.get('frames'):
             field_data[FIELD_MAPPING["frames"]] = video_specs['frames']
         
+        # Determine color mode from pixel format
+        if video_specs.get('pix_fmt'):
+            color_mode = determine_color_mode(
+                video_specs['pix_fmt'], 
+                video_specs.get('color_space')
+            )
+            field_data[FIELD_MAPPING["color_mode"]] = color_mode
+            print(f"  -> Color mode: {color_mode}")
+        
         # Calculate duration and end timecode
         if video_specs.get('duration_seconds'):
             duration_seconds = video_specs['duration_seconds']
@@ -563,6 +699,8 @@ if __name__ == "__main__":
             print(f"  -> Source: {source}")
             print(f"  -> Archival ID: {archival_id}")
             print(f"  -> Filename: {filename}")
+            if field_data.get(FIELD_MAPPING["color_mode"]):
+                print(f"  -> Color Mode: {field_data[FIELD_MAPPING['color_mode']]}")
             if url and url_source:
                 print(f"  -> URL source: {url_source}")
         else:

@@ -22,6 +22,7 @@ FIELD_MAPPING = {
     "duration": "SPECS_File_Duration_Timecode",
     "ai_prompt": "AI_Prompt",
     "audio_type": "INFO_AudioType",
+    "location": "INFO_Location",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_status": "FRAMES_Status",
     "frame_id": "FRAMES_ID",
@@ -300,8 +301,12 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         frames_with_audio = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_transcript"], "").strip())
         frames_with_visuals = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_caption"], "").strip())
         
+        # Count frames with content
+        frames_with_audio = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_transcript"], "").strip())
+        frames_with_visuals = sum(1 for frame in frames_sorted if frame.get(FIELD_MAPPING["frame_caption"], "").strip())
+        
         if frames_with_visuals == 0:
-            return "No Visual Content", "This video appears to lack visual content data.", "", "MOS", ""
+            return "No Visual Content", "This video appears to lack visual content data.", "", "MOS", "", ""
         
         # Build CSV data for analysis
         csv_lines = ["Frame,Timecode,Visual Description,Audio Transcript"]
@@ -362,26 +367,28 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         
         final_response = response.choices[0].message.content.strip()
         
-        # Parse title, description, date, and audio_type from JSON response
-        title, description, date, audio_type = parse_json_response(final_response)
+        # Parse title, description, date, audio_type, and location from JSON response
+        title, description, date, audio_type, location = parse_json_response(final_response)
         
         print(f"  -> Generated title: {title}")
         print(f"  -> Generated description: {len(description)} characters")
         print(f"  -> Generated date: {date}")
         print(f"  -> Generated audio_type: {audio_type}")
+        print(f"  -> Generated location: {location}")
         
-        return title, description, date, audio_type, csv_data
+        return title, description, date, audio_type, location, csv_data
         
     except Exception as e:
         print(f"❌ Error generating video description: {e}")
-        return "", "", "", "MOS", ""
+        return "", "", "", "MOS", "", ""
 
 def parse_json_response(response_text):
-    """Parse title, description, date, and audio_type from JSON API response."""
+    """Parse title, description, date, audio_type, and location from JSON API response."""
     title = ""
     description = ""
     date = ""
     audio_type = "MOS"  # Default to MOS
+    location = ""  # Default to empty
     
     try:
         print(f"  -> Raw API response: {response_text[:200]}...")  # Debug output
@@ -423,8 +430,9 @@ def parse_json_response(response_text):
             description = data.get('description', '').strip()
             date = data.get('date', '').strip()
             audio_type = data.get('audio_type', 'MOS').strip()
+            location = data.get('location', '').strip()
             
-            print(f"  -> JSON parsing successful: title='{title[:50]}...', description='{description[:50]}...', date='{date}', audio_type='{audio_type}'")
+            print(f"  -> JSON parsing successful: title='{title[:50]}...', description='{description[:50]}...', date='{date}', audio_type='{audio_type}', location='{location}'")
             
         except json.JSONDecodeError as e:
             print(f"  -> JSON decode failed: {e}")
@@ -441,23 +449,32 @@ def parse_json_response(response_text):
                     description = line[12:].strip()
                 elif line.lower().startswith('date:'):
                     date = line[5:].strip()
-                elif not title and not line.lower().startswith(('description:', 'date:')):
+                elif line.lower().startswith('audio_type:'):
+                    audio_type = line[11:].strip()
+                elif line.lower().startswith('location:'):
+                    location = line[9:].strip()
+                elif not title and not line.lower().startswith(('description:', 'date:', 'audio_type:', 'location:')):
                     title = line
-                elif title and not description and not line.lower().startswith('date:'):
+                elif title and not description and not line.lower().startswith(('date:', 'audio_type:', 'location:')):
                     description = line
         
         # Clean up prefixes and quotes
         title = title.replace('Title:', '').replace('title:', '').strip().strip('"\'')
         description = description.replace('Description:', '').replace('description:', '').strip().strip('"\'')
         date = date.replace('Date:', '').replace('date:', '').strip().strip('"\'')
+        audio_type = audio_type.replace('Audio_type:', '').replace('audio_type:', '').strip().strip('"\'')
+        location = location.replace('Location:', '').replace('location:', '').strip().strip('"\'')
         
         # Ensure we have something
         if not title:
             title = "Untitled Video"
         if not description:
             description = "No description available"
+        if not audio_type or audio_type.lower() not in ['mos', 'sound']:
+            audio_type = "MOS"  # Default fallback
+        # Location can remain empty if not provided
             
-        print(f"  -> Final parsed values: title='{title}', description='{description[:50]}...', date='{date}'")
+        print(f"  -> Final parsed values: title='{title}', description='{description[:50]}...', date='{date}', audio_type='{audio_type}', location='{location}'")
             
     except Exception as e:
         print(f"  -> Error parsing response: {e}")
@@ -465,8 +482,10 @@ def parse_json_response(response_text):
         title = "Untitled Video"
         description = response_text.strip() if response_text.strip() else "No description available"
         date = ""
+        audio_type = "MOS"
+        location = ""
     
-    return title, description, date
+    return title, description, date, audio_type, location
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -504,7 +523,8 @@ if __name__ == "__main__":
             # Set a basic description
             field_data = {
                 FIELD_MAPPING["description"]: "Video footage with no frame data available for analysis.",
-                FIELD_MAPPING["date"]: ""
+                FIELD_MAPPING["date"]: "",
+                FIELD_MAPPING["audio_type"]: "MOS"  # Default to MOS when no frame data
             }
             config.update_record(token, "FOOTAGE", record_id, field_data)
             print(f"✅ Set basic description for footage {footage_id}")
@@ -520,18 +540,23 @@ if __name__ == "__main__":
         client = setup_openai_client(token)
         
         # Generate description
-        title, description, date, csv_data = generate_video_description(client, frames_data, footage_data, prompts)
+        title, description, date, audio_type, location, csv_data = generate_video_description(client, frames_data, footage_data, prompts)
         
         if not description:
             print(f"❌ Failed to generate description")
             sys.exit(1)
         
-        # Update the footage record with title, description, date, and video events
+        # Update the footage record with title, description, date, audio_type, location, and video events
         field_data = {
             FIELD_MAPPING["description"]: description,
             FIELD_MAPPING["date"]: date,
+            FIELD_MAPPING["audio_type"]: audio_type,
             "INFO_Video_Events": csv_data  # Store the frame-by-frame analysis
         }
+        
+        # Add location if provided
+        if location:
+            field_data[FIELD_MAPPING["location"]] = location
         
         # Add title if we have a title field (check if it exists)
         if "INFO_Title" in footage_data:
@@ -544,6 +569,8 @@ if __name__ == "__main__":
             print(f"  -> Title: {title}")
             print(f"  -> Description: {len(description)} characters")
             print(f"  -> Date: {date}")
+            print(f"  -> Audio Type: {audio_type}")
+            print(f"  -> Location: {location if location else 'Not specified'}")
             print(f"  -> Video Events: {len(csv_data)} characters (frame-by-frame CSV data)")
             
             # Set final status when called as individual endpoint

@@ -31,8 +31,9 @@ Always include the date the footage was taken as the last sentence. If there is 
 Frame-level data:
 {FRAME_DATA}
 
-Return your answer as a JSON object with exactly these four fields:
+Return your answer as a JSON object with exactly these five fields:
 - `title`: [3–8 word descriptive title]
 - `description`: [2–4 sentence catalog description with natural date formatting at the end]
 - `date`: [The date in structured format: YYYY/MM/DD, or YYYY/MM, or just YYYY. If no date available, return an empty string.]
-- `audio_type`: [Return "MOS" if the footage is silent/has no audio, or "Sound" if audio is present]
+- `audio_type`: [CRITICAL: If the audio status above shows "[AUDIO PRESENT]", return "Sound". If it shows "[SILENT VIDEO - NO AUDIO]", return "MOS". Do NOT analyze the transcripts yourself - follow the audio status indicator exactly.]
+- `location`: [CRITICAL: ONLY if location is clearly identifiable and obvious from the content, return in format "City, State" using 2-letter state abbreviations. CORRECT: "Chicago, IL", "New York, NY", "Columbia, SC". WRONG: "Chicago, Illinois", "Columbia, South Carolina". NEVER use full state names. If location is generic, unclear, or not obvious, return an empty string. DO NOT guess or speculate about locations.]
