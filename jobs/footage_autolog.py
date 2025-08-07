@@ -150,18 +150,9 @@ POLLING_TARGETS = [
         "requires_frame_completion": True,  # Must wait for all frames to be ready
         "update_frame_statuses_after": "5 - Generating Embeddings"  # Move frames to next step after parent completes
     },
-    # Special target for user-resumed items
-    # Client-side trigger should set: frames -> "2 - Thumbnail Complete", footage -> "5 - Processing Frame Info"
-    {
-        "name": "Resume: Awaiting User Input → Processing Frame Info",
-        "status": "Awaiting User Input",
-        "next_status": "5 - Processing Frame Info",
-        "script": "footage_autolog_05_process_frames.py",  # Resume from frame processing
-        "timeout": 1800,
-        "max_workers": 5,
-        "check_frame_dependencies": True,
-        "user_resume": True  # Special flag for user-resumed items
-    }
+    # NOTE: "Awaiting User Input" is now a true terminal state
+    # Users must manually change status (e.g., to "Force Resume") to resume processing
+    # The special resume polling target has been removed
 ]
 
 def find_records_by_status(token, status_list):
@@ -608,40 +599,9 @@ def process_polling_target(target, token, poll_stats):
         
         # Handle user resume logic
         if target.get("user_resume"):
-            # Check if user has added sufficient metadata for resuming
-            metadata = record_data.get(FIELD_MAPPING["metadata"], '')
-            if not metadata or len(metadata.strip()) < 50:
-                tprint(f"  -> {footage_id}: Still insufficient metadata ({len(metadata)} chars) - keeping in Awaiting User Input")
-                continue
-            
-            # Check if frames are at appropriate resume status
-            try:
-                frame_response = requests.post(
-                    config.url("layouts/FRAMES/_find"),
-                    headers=config.api_headers(token),
-                    json={"query": [{"FRAMES_ParentID": footage_id}], "limit": 5},
-                    verify=False,
-                    timeout=10
-                )
-                
-                if frame_response.status_code == 200:
-                    frames = frame_response.json()['response']['data']
-                    if frames:
-                        # Check if frames are at "2 - Thumbnail Complete" or ready to resume
-                        frame_ready_count = 0
-                        for frame in frames[:3]:  # Check first few frames
-                            frame_status = frame['fieldData'].get(FIELD_MAPPING["frame_status"], '')
-                            if frame_status in ['2 - Thumbnail Complete', '3 - Caption Generated', '4 - Audio Transcribed']:
-                                frame_ready_count += 1
-                        
-                        if frame_ready_count == 0:
-                            tprint(f"⏳ {footage_id}: Frames not at resume status - waiting for client-side trigger")
-                            continue
-                        else:
-                            tprint(f"  -> {footage_id}: Ready to resume - user has added metadata and frames are ready")
-            except:
-                # If we can't check frames, proceed anyway
-                pass
+            # This logic has been removed - "Awaiting User Input" is now a true terminal state
+            # Users must manually change status to resume processing
+            pass
         
         # Check frame dependencies for step 5
         if target.get("check_frame_dependencies"):
@@ -964,8 +924,8 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                 "4 - Scraping URL",
                 "5 - Processing Frame Info",
                 "6 - Generating Description",
-                "Force Resume",
-                "Awaiting User Input"  # May resume if metadata improved
+                "Force Resume"
+                # NOTE: "Awaiting User Input" is a terminal state - user must manually change status to resume
             ]
             
             # Define all frame statuses that need processing
@@ -1341,53 +1301,10 @@ def process_footage_task(task, token):
         
         # Special case: Handle user-resumed items
         elif current_status == "Awaiting User Input":
-            # LF items should never automatically resume - they always need manual intervention
-            if footage_id.startswith("LF"):
-                tprint(f"⏳ {footage_id}: LF item in Awaiting User Input - requires manual processing, keeping in current status")
-                break
-            
-            metadata_quality_good = evaluate_metadata_quality(record_data, token, task["record_id"])
-            
-            if not metadata_quality_good:
-                tprint(f"⏳ {footage_id}: Metadata still insufficient - keeping in Awaiting User Input")
-                break
-            
-            # Check frame readiness for resumption
-            try:
-                frame_response = requests.post(
-                    config.url("layouts/FRAMES/_find"),
-                    headers=config.api_headers(token),
-                    json={"query": [{"FRAMES_ParentID": footage_id}], "limit": 5},
-                    verify=False,
-                    timeout=10
-                )
-                
-                if frame_response.status_code == 200:
-                    frames = frame_response.json()['response']['data']
-                    if frames:
-                        frame_ready_count = 0
-                        for frame in frames[:3]:
-                            frame_status = frame['fieldData'].get(FIELD_MAPPING["frame_status"], '')
-                            if frame_status in ['2 - Thumbnail Complete', '3 - Caption Generated', '4 - Audio Transcribed']:
-                                frame_ready_count += 1
-                        
-                        if frame_ready_count == 0:
-                            tprint(f"⏳ {footage_id}: Frames not at resume status - waiting for client-side trigger")
-                            break
-            except:
-                pass
-            
-            tprint(f"🔄 {footage_id}: Resuming from user input - metadata quality improved")
-            success = run_footage_script(footage_id, "footage_autolog_05_process_frames.py", "5 - Processing Frame Info", None, token, task["record_id"])
-            if success:
-                steps_completed += 1
-                current_status = "5 - Processing Frame Info"
-                # Brief delay to ensure frame status updates are committed before checking step 6 readiness
-                time.sleep(2)
-                # Continue to next iteration to check if step 6 is ready
-                continue
-            else:
-                break
+            # "Awaiting User Input" is a terminal state - no automatic processing
+            # User must manually change the status (e.g., to "Force Resume") to resume processing
+            tprint(f"⏸️ {footage_id}: In 'Awaiting User Input' state - requires manual intervention to resume")
+            break
         
         # Special case: Force Resume - bypasses all metadata checks
         elif current_status == "Force Resume":
@@ -1396,13 +1313,9 @@ def process_footage_task(task, token):
             # Write force resume message to console
             write_to_dev_console(task["record_id"], token, "FORCE RESUME triggered by user - bypassing metadata evaluation")
             
-            # CRITICAL FIX: Reset frame statuses to "2 - Thumbnail Complete" so the frame processing script can handle them
-            # footage_autolog_05_process_frames.py expects frames in normal workflow states, not "Force Resume"
-            tprint(f"  -> {footage_id}: Resetting frame statuses to '2 - Thumbnail Complete' for proper processing...")
-            if update_frame_statuses_for_footage(footage_id, token, "2 - Thumbnail Complete"):
-                tprint(f"  -> ✅ {footage_id}: Frame statuses reset successfully - frames can now be processed")
-            else:
-                tprint(f"  -> ⚠️ {footage_id}: Failed to reset frame statuses (continuing anyway)")
+            # NOTE: We no longer reset frame statuses to avoid re-processing completed frames
+            # Instead, the frame processing script now understands "Force Resume" as equivalent to "2 - Thumbnail Complete"
+            tprint(f"  -> {footage_id}: Starting frame processing (frames will be processed from their current state)...")
             
             # Immediately start frame processing regardless of metadata quality
             success = run_footage_script(footage_id, "footage_autolog_05_process_frames.py", "5 - Processing Frame Info", None, token, task["record_id"])

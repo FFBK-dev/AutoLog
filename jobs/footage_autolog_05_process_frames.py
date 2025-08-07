@@ -279,9 +279,9 @@ def process_frame_captions(token, frames):
         caption = frame_data.get("FRAMES_Caption", "").strip()
         
         # Need caption if:
-        # 1. Status is "2 - Thumbnail Complete" or lower, and doesn't have caption
+        # 1. Status is "2 - Thumbnail Complete", "Force Resume", or lower, and doesn't have caption
         # 2. OR status is "3 - Caption Generated" but no caption content (stuck frame)
-        if ((status in [FRAME_STATUSES["THUMBNAIL_COMPLETE"], FRAME_STATUSES["PENDING_THUMBNAIL"]] and not caption) or
+        if ((status in [FRAME_STATUSES["THUMBNAIL_COMPLETE"], FRAME_STATUSES["PENDING_THUMBNAIL"], "Force Resume"] and not caption) or
             (status == "3 - Caption Generated" and not caption)):
             frame_data["_processing_step"] = "caption"  # Mark for caption processing
             caption_needed_frames.append(frame)
@@ -400,7 +400,7 @@ def process_frame_audio_with_precheck(token, frames):
         # Need audio if:
         # 1. Has caption but no transcript, and status is "3 - Caption Generated" or lower
         # 2. OR status is "4 - Audio Transcribed" but no transcript content (stuck frame)
-        frame_needs_audio = ((caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete", "1 - Pending Thumbnail"]) or
+        frame_needs_audio = ((caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete", "Force Resume"]) or
                            (status == "4 - Audio Transcribed" and not transcript))
         
         if frame_needs_audio:
@@ -695,7 +695,7 @@ def process_frames_continuous_flow(token, frames, footage_id, estimated_timeout)
             caption = current_frame['fieldData'].get("FRAMES_Caption", "").strip()
             
             # Step 2: Caption (if needed)
-            if current_status in ["2 - Thumbnail Complete", "1 - Pending Thumbnail"] and not caption:
+            if current_status in ["2 - Thumbnail Complete", "1 - Pending Thumbnail", "Force Resume"] and not caption:
                 tprint(f"[FLOW] {frame_id}: Generating caption...")
                 if not run_frame_script_with_retry("frames_generate_captions.py", frame_id, token, timeout=120, max_retries=2):
                     tprint(f"[FLOW] {frame_id}: ❌ Caption failed")
@@ -887,13 +887,13 @@ def monitor_and_process_frames_continuously(token, footage_id, estimated_timeout
                 continue
             
             # Frame needs caption
-            if status == "2 - Thumbnail Complete" and not caption:
+            if (status == "2 - Thumbnail Complete" or status == "Force Resume") and not caption:
                 frames_needing_captions.append(frame)
             # Frame needs caption retry (has status but no content)
             elif status == "3 - Caption Generated" and not caption:
                 frames_stuck.append((frame, "caption"))
             # Frame needs audio
-            elif caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete"]:
+            elif caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete", "Force Resume"]:
                 if has_audio is False:
                     # Silent video - fast track
                     frames_needing_audio.append((frame, "silent"))
