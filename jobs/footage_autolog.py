@@ -1396,6 +1396,14 @@ def process_footage_task(task, token):
             # Write force resume message to console
             write_to_dev_console(task["record_id"], token, "FORCE RESUME triggered by user - bypassing metadata evaluation")
             
+            # CRITICAL FIX: Reset frame statuses to "2 - Thumbnail Complete" so the frame processing script can handle them
+            # footage_autolog_05_process_frames.py expects frames in normal workflow states, not "Force Resume"
+            tprint(f"  -> {footage_id}: Resetting frame statuses to '2 - Thumbnail Complete' for proper processing...")
+            if update_frame_statuses_for_footage(footage_id, token, "2 - Thumbnail Complete"):
+                tprint(f"  -> ✅ {footage_id}: Frame statuses reset successfully - frames can now be processed")
+            else:
+                tprint(f"  -> ⚠️ {footage_id}: Failed to reset frame statuses (continuing anyway)")
+            
             # Immediately start frame processing regardless of metadata quality
             success = run_footage_script(footage_id, "footage_autolog_05_process_frames.py", "5 - Processing Frame Info", None, token, task["record_id"])
             if success:
