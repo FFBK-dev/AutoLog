@@ -14,13 +14,32 @@ import config
 
 __ARGS__ = ["payload_file"]  # Expect path to JSON payload file
 
+def convert_checkbox_to_text(value):
+    """Convert FileMaker checkbox value to Yes/No text for Avid."""
+    if value == "0":
+        return "Yes"
+    elif value == "1" or not value:
+        return "No"
+    else:
+        return "No"  # Default to No for any other value
+
+def convert_text_to_checkbox(value):
+    """Convert Yes/No text from Avid to FileMaker checkbox value."""
+    if isinstance(value, str):
+        if value.lower().strip() == "yes":
+            return "0"
+        elif value.lower().strip() == "no":
+            return "1"
+    return "1"  # Default to No (1) for any other value
+
 # Field mappings for different layouts
 STILLS_FIELD_MAPPING = {
     "stills_id": "INFO_STILLS_ID",
     "info_description": "INFO_Description", 
     "info_date": "INFO_Date",
     "info_source": "INFO_Source",
-    "tags_list": "TAGS_List"
+    "tags_list": "TAGS_List",
+    "info_reviewed_checkbox": "INFO_Reviewed_Checkbox"
 }
 
 FOOTAGE_FIELD_MAPPING = {
@@ -31,7 +50,11 @@ FOOTAGE_FIELD_MAPPING = {
     "info_location": "INFO_Location",
     "info_source": "INFO_Source",
     "info_date": "INFO_Date", 
-    "tags_list": "TAGS_List"
+    "tags_list": "TAGS_List",
+    "info_color_mode": "INFO_ColorMode",
+    "info_audio_type": "INFO_AudioType",
+    "info_avid_description": "INFO_AvidDescription",
+    "info_reviewed_checkbox": "INFO_Reviewed_Checkbox"
 }
 
 def get_stills_metadata(stills_ids, token):
@@ -78,7 +101,8 @@ def get_stills_metadata(stills_ids, token):
                 "info_description": record_data.get(STILLS_FIELD_MAPPING["info_description"], ""),
                 "info_date": record_data.get(STILLS_FIELD_MAPPING["info_date"], ""),
                 "info_source": record_data.get(STILLS_FIELD_MAPPING["info_source"], ""),
-                "tags_list": record_data.get(STILLS_FIELD_MAPPING["tags_list"], "")
+                "tags_list": record_data.get(STILLS_FIELD_MAPPING["tags_list"], ""),
+                "info_reviewed_checkbox": convert_checkbox_to_text(record_data.get(STILLS_FIELD_MAPPING["info_reviewed_checkbox"], ""))
             }
             
             results.append(metadata)
@@ -139,7 +163,11 @@ def get_footage_metadata(file_names, token, layout_name):
                 "info_location": record_data.get(FOOTAGE_FIELD_MAPPING["info_location"], ""),
                 "info_source": record_data.get(FOOTAGE_FIELD_MAPPING["info_source"], ""),
                 "info_date": record_data.get(FOOTAGE_FIELD_MAPPING["info_date"], ""),
-                "tags_list": record_data.get(FOOTAGE_FIELD_MAPPING["tags_list"], "")
+                "tags_list": record_data.get(FOOTAGE_FIELD_MAPPING["tags_list"], ""),
+                "info_color_mode": record_data.get(FOOTAGE_FIELD_MAPPING["info_color_mode"], ""),
+                "info_audio_type": record_data.get(FOOTAGE_FIELD_MAPPING["info_audio_type"], ""),
+                "info_avid_description": record_data.get(FOOTAGE_FIELD_MAPPING["info_avid_description"], ""),
+                "info_reviewed_checkbox": convert_checkbox_to_text(record_data.get(FOOTAGE_FIELD_MAPPING["info_reviewed_checkbox"], ""))
             }
             
             results.append(metadata)
@@ -169,8 +197,11 @@ def main():
         media_type = payload.get('media_type')
         identifiers = payload.get('identifiers', [])
         
-        # Get FileMaker token
+        # Get FileMaker token (redirect status messages to stderr)
+        original_stdout = sys.stdout
+        sys.stdout = sys.stderr
         token = config.get_token()
+        sys.stdout = original_stdout
         
         # Process based on media type
         if media_type == 'stills':

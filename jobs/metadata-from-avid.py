@@ -14,6 +14,24 @@ import config
 
 __ARGS__ = ["payload_file"]  # Expect path to JSON payload file
 
+def convert_checkbox_to_text(value):
+    """Convert FileMaker checkbox value to Yes/No text for Avid."""
+    if value == "0":
+        return "Yes"
+    elif value == "1" or not value:
+        return "No"
+    else:
+        return "No"  # Default to No for any other value
+
+def convert_text_to_checkbox(value):
+    """Convert Yes/No text from Avid to FileMaker checkbox value."""
+    if isinstance(value, str):
+        if value.lower().strip() == "yes":
+            return "0"
+        elif value.lower().strip() == "no":
+            return "1"
+    return "1"  # Default to No (1) for any other value
+
 # Field mappings for different layouts (reverse direction - Avid → FileMaker)
 STILLS_FIELD_MAPPING = {
     "stills_id": "INFO_STILLS_ID",
@@ -21,6 +39,7 @@ STILLS_FIELD_MAPPING = {
     "info_date": "INFO_Date",
     "info_source": "INFO_Source",
     "tags_list": "TAGS_List",
+    "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
     "autolog_status": "AutoLog_Status"
 }
 
@@ -33,6 +52,10 @@ FOOTAGE_FIELD_MAPPING = {
     "info_source": "INFO_Source",
     "info_date": "INFO_Date", 
     "tags_list": "TAGS_List",
+    "info_color_mode": "INFO_ColorMode",
+    "info_audio_type": "INFO_AudioType",
+    "info_avid_description": "INFO_AvidDescription",
+    "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
     "autolog_status": "AutoLog_Status"
 }
 
@@ -80,6 +103,9 @@ def update_stills_metadata(assets, token):
             
             if metadata.get("tags"):
                 field_data[STILLS_FIELD_MAPPING["tags_list"]] = metadata["tags"]
+            
+            if metadata.get("reviewed_checkbox"):
+                field_data[STILLS_FIELD_MAPPING["info_reviewed_checkbox"]] = convert_text_to_checkbox(metadata["reviewed_checkbox"])
             
             # Note: INFO_Name and INFO_Title fields don't exist in FileMaker Stills layout
             # These fields are skipped to avoid "Field is missing" errors
@@ -185,6 +211,18 @@ def update_footage_metadata(assets, token, layout_name):
             if metadata.get("tags"):
                 field_data[FOOTAGE_FIELD_MAPPING["tags_list"]] = metadata["tags"]
             
+            if metadata.get("color_mode"):
+                field_data[FOOTAGE_FIELD_MAPPING["info_color_mode"]] = metadata["color_mode"]
+            
+            if metadata.get("audio_type"):
+                field_data[FOOTAGE_FIELD_MAPPING["info_audio_type"]] = metadata["audio_type"]
+            
+            if metadata.get("avid_description"):
+                field_data[FOOTAGE_FIELD_MAPPING["info_avid_description"]] = metadata["avid_description"]
+            
+            if metadata.get("reviewed_checkbox"):
+                field_data[FOOTAGE_FIELD_MAPPING["info_reviewed_checkbox"]] = convert_text_to_checkbox(metadata["reviewed_checkbox"])
+            
             # Note: INFO_Name field doesn't exist in FileMaker Footage layout
             # INFO_Title DOES exist in Footage layout, so it will be updated
             # This field is skipped to avoid "Field is missing" errors
@@ -259,8 +297,11 @@ def main():
             print(json.dumps({"error": "No assets provided in payload"}))
             return False
         
-        # Get FileMaker token
+        # Get FileMaker token (redirect status messages to stderr)
+        original_stdout = sys.stdout
+        sys.stdout = sys.stderr
         token = config.get_token()
+        sys.stdout = original_stdout
         
         # Process based on media type
         if media_type == 'stills':

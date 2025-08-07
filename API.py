@@ -9,7 +9,7 @@ This API server provides:
 4. Resilient error handling
 """
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Body
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Body, Request
 import logging
 import warnings
 import subprocess
@@ -629,7 +629,7 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
 # Metadata Bridge Endpoints for Avid Media Composer Integration
 
 @app.post("/metadata-bridge/query", dependencies=[Depends(check_key)])
-def metadata_bridge_query(payload: dict = Body(...)):
+def metadata_bridge_query(request: Request, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for FileMaker Pro → Avid Media Composer (metadata-to-avid)
     
@@ -637,14 +637,20 @@ def metadata_bridge_query(payload: dict = Body(...)):
     Returns: Metadata for the specified identifiers
     """
     try:
+        # Log the incoming request for debugging
+        logging.info(f"🔍 Metadata bridge query received from {request.client.host}")
+        logging.info(f"🔍 Payload received: {payload}")
+        
         # Validate payload
         media_type = payload.get('media_type')
         identifiers = payload.get('identifiers', [])
         
         if not media_type:
+            logging.error(f"❌ Missing media_type in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing media_type in payload")
         
         if not identifiers:
+            logging.error(f"❌ Missing identifiers in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing identifiers in payload")
         
         # Create temporary payload file
@@ -684,12 +690,17 @@ def metadata_bridge_query(payload: dict = Body(...)):
                 
     except HTTPException:
         raise
+    except json.JSONDecodeError as e:
+        logging.error(f"❌ Metadata bridge query JSON decode error: {str(e)}")
+        logging.error(f"❌ Raw payload that failed to parse: {payload}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
     except Exception as e:
         logging.error(f"❌ Metadata bridge query error: {str(e)}")
+        logging.error(f"❌ Error type: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/metadata-bridge/export", dependencies=[Depends(check_key)])
-def metadata_bridge_export(payload: dict = Body(...)):
+def metadata_bridge_export(request: Request, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for Avid Media Composer → FileMaker Pro (metadata-from-avid)
     
@@ -697,14 +708,20 @@ def metadata_bridge_export(payload: dict = Body(...)):
     Returns: Success confirmation with processing results
     """
     try:
+        # Log the incoming request for debugging
+        logging.info(f"🔍 Metadata bridge export received from {request.client.host}")
+        logging.info(f"🔍 Payload received: {payload}")
+        
         # Validate payload
         media_type = payload.get('media_type')
         assets = payload.get('assets', [])
         
         if not media_type:
+            logging.error(f"❌ Missing media_type in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing media_type in payload")
         
         if not assets:
+            logging.error(f"❌ Missing assets in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing assets in payload")
         
         # Create temporary payload file
@@ -744,8 +761,13 @@ def metadata_bridge_export(payload: dict = Body(...)):
                 
     except HTTPException:
         raise
+    except json.JSONDecodeError as e:
+        logging.error(f"❌ Metadata bridge export JSON decode error: {str(e)}")
+        logging.error(f"❌ Raw payload that failed to parse: {payload}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
     except Exception as e:
         logging.error(f"❌ Metadata bridge export error: {str(e)}")
+        logging.error(f"❌ Error type: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/health")
@@ -765,6 +787,32 @@ def health_check():
         "openai_keys_available": openai_available,
         "openai_key_count": openai_key_count
     }
+
+@app.get("/sessions", dependencies=[Depends(check_key)])
+def get_session_status():
+    """Get current FileMaker session information."""
+    try:
+        session_info = config.get_session_info()
+        api_status = config.test_api_connection()
+        
+        return {
+            "api_available": api_status,
+            "session_info": session_info,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"❌ Error getting session status: {e}")
+        raise HTTPException(status_code=500, detail=f"Session status error: {str(e)}")
+
+@app.post("/sessions/cleanup", dependencies=[Depends(check_key)])
+def cleanup_sessions():
+    """Force cleanup of all FileMaker sessions."""
+    try:
+        config.force_session_cleanup()
+        return {"message": "All sessions cleaned up successfully"}
+    except Exception as e:
+        logging.error(f"❌ Error cleaning up sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Session cleanup error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
