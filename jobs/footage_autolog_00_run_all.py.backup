@@ -26,20 +26,18 @@ warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from utils.local_metadata_evaluator import evaluate_metadata_local
-from utils.status_cache import StatusCache
-from utils.batch_status_checker import BatchStatusChecker
 
 def tprint(message):
     """Print with timestamp for performance debugging."""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] {message}", flush=True)  # Force flush for real-time streaming
+    print(f"[{timestamp}] {message}")
 
 def get_timestamp():
     """Get current timestamp string."""
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-# Accept payload IDs through arguments or auto-discover pending items
-__ARGS__ = ["footage_ids_json"]  # Optional JSON array of footage IDs
+# No arguments - automatically finds pending items or items ready for frame processing
+__ARGS__ = []
 
 JOBS_DIR = Path(__file__).resolve().parent  # Same directory as this script
 
@@ -82,159 +80,96 @@ FIELD_MAPPING = {
     "frame_embed_fused": "FRAMES_Embed_Fused"
 }
 
-# Modern workflow steps (step 6 is final - workflow stops at "7 - Generating Embeddings")
+# Define the complete workflow with status updates
+# Modified to stop after step 6 (description generation) and set status to "7 - Generating Embeddings"
 WORKFLOW_STEPS = [
     {
-        "step": 1,
+        "step_num": 1,
         "status_before": "0 - Pending File Info",
         "status_after": "1 - File Info Complete",
         "script": "footage_autolog_01_get_file_info.py",
-        "description": "Get File Info",
-        "timeout": 300
+        "description": "Get File Info"
     },
     {
-        "step": 2,
+        "step_num": 2,
         "status_before": "1 - File Info Complete",
         "status_after": "2 - Thumbnails Complete",
         "script": "footage_autolog_02_generate_thumbnails.py",
-        "description": "Generate Footage Thumbnail",
-        "timeout": 300
+        "description": "Generate Footage Thumbnail"
     },
     {
-        "step": 3,
+        "step_num": 3,
         "status_before": "2 - Thumbnails Complete",
         "status_after": "3 - Creating Frames",
         "script": "footage_autolog_03_create_frames.py",
-        "description": "Create Frame Records",
-        "timeout": 300
+        "description": "Create Frame Records"
     },
     {
-        "step": 4,
+        "step_num": 4,
         "status_before": "3 - Creating Frames",
         "status_after": "4 - Scraping URL",
         "script": "footage_autolog_04_scrape_url.py",
         "description": "Scrape URL",
         "conditional": True,  # Only run if URL exists
-        "timeout": 300
+        "check_url_only": True  # Simple URL existence check
     },
     {
-        "step": 5,
-        "status_before": ["4 - Scraping URL", "3 - Creating Frames"],  # Multiple valid states
+        "step_num": 5,
+        "status_before": None,  # Variable - could be step 3 or 4
         "status_after": "5 - Processing Frame Info",
         "script": "footage_autolog_05_process_frames.py",
         "description": "Process Frame Info",
-        "metadata_evaluation": True,  # Evaluate metadata quality
-        "timeout": 1800  # Longer timeout for frame processing
+        "evaluate_metadata": True  # Single evaluation checkpoint after URL scraping
     },
     {
-        "step": 6,
-        "status_before": "5 - Processing Frame Info",
+        "step_num": 6,
+        "status_before": None,  # Variable - could be step 3, 4, or 5 status
         "status_after": "6 - Generating Description",  # Status while working
         "script": "footage_autolog_06_generate_description.py",
         "description": "Generate Description",
-        "final_status": "7 - Generating Embeddings",  # Status after completion (FINAL)
-        "requires_frame_completion": True,
-        "timeout": 600
+        "final_status": "7 - Generating Embeddings"  # Status after completion
     }
 ]
 
-# Terminal states (workflow complete)
-TERMINAL_STATES = [
-    "7 - Generating Embeddings",  # Step 6 completion (FINAL)
-    "8 - Applying Tags",          # PSOS handled
-    "9 - Complete",               # PSOS handled  
-    "Awaiting User Input"         # User intervention required
-]
-
-# Processable pickup statuses
-PICKUP_STATUSES = [
-    "0 - Pending File Info",     # Standard start
-    "1 - File Info Complete",    # Resume from step 2
-    "2 - Thumbnails Complete",   # Resume from step 3
-    "3 - Creating Frames",       # Resume from step 4
-    "4 - Scraping URL",          # Resume from step 5
-    "5 - Processing Frame Info", # Resume from step 6
-    "Force Resume"               # User-triggered bypass
-]
-
-class ModernProcessingQueue:
-    """Modern queued processing with API protection."""
+def determine_workflow_start_step(current_status, record_data):
+    """Determine which step to start the workflow from based on current status and record state."""
+    print(f"  -> Determining workflow start point for status: {current_status}")
     
-    def __init__(self, token, max_concurrent=5, batch_size=10):
-        self.token = token
-        self.max_concurrent = max_concurrent  # Conservative limit
-        self.batch_size = batch_size
-        self.status_cache = StatusCache(cache_duration_seconds=60)  # Longer cache for run-all
-        self.batch_checker = BatchStatusChecker(token)
-        
-        # Statistics
-        self.stats = {
-            "total_items": 0,
-            "successful": 0,
-            "failed": 0,
-            "skipped": 0,
-            "results": [],
-            "start_time": datetime.now().isoformat(),
-            "end_time": None
-        }
-
-def validate_footage_ids(footage_ids, token, max_retries=3):
-    """Validate that footage IDs exist in FileMaker."""
-    if not footage_ids:
-        return []
+    # Status to step mapping
+    status_to_step = {
+        "0 - Pending File Info": 1,
+        "1 - File Info Complete": 2,
+        "2 - Thumbnails Complete": 3,
+        "3 - Creating Frames": 4,
+        "4 - Scraping URL": 5,
+        "5 - Processing Frame Info": 5,  # Continue from step 5
+        "6 - Generating Description": 6,  # Continue from step 6
+        "7 - Generating Embeddings": None,  # PSOS will handle this
+        "8 - Applying Tags": None,  # PSOS will handle this
+        "9 - Complete": None,  # Already complete
+        "Awaiting User Input": None,  # Special handling needed
+        "Resume Processing": 5  # User-triggered resume from step 5
+    }
     
-    current_token = token
+    # Handle special cases
+    if current_status == "Awaiting User Input":
+        # Check if user has added metadata - if so, resume from step 5 (process frames)
+        user_metadata = record_data.get(FIELD_MAPPING["metadata"], '')
+        if user_metadata and len(user_metadata.strip()) > 50:  # Reasonable threshold
+            print(f"  -> User has added metadata ({len(user_metadata)} chars) - resuming from step 5")
+            return 5
+        else:
+            print(f"  -> Still awaiting user input - insufficient metadata")
+            return None
     
-    for attempt in range(max_retries):
-        try:
-            # Use batch checker for efficient validation
-            batch_checker = BatchStatusChecker(current_token)
-            status_map = batch_checker.batch_check_footage_statuses(set(footage_ids))
-            
-            valid_ids = list(status_map.keys())
-            missing_ids = [fid for fid in footage_ids if fid not in valid_ids]
-            
-            tprint(f"📋 Validation: {len(valid_ids)}/{len(footage_ids)} IDs found in FileMaker")
-            if missing_ids:
-                tprint(f"⚠️ Missing IDs: {missing_ids[:5]}{'...' if len(missing_ids) > 5 else ''}")
-            
-            return valid_ids
-            
-        except Exception as e:
-            tprint(f"⚠️ Validation attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                current_token = config.get_token()
-                time.sleep(2 ** attempt)
-                continue
+    # Check if already complete or handled by PSOS
+    if current_status in ["7 - Generating Embeddings", "8 - Applying Tags", "9 - Complete"]:
+        print(f"  -> Status handled by PSOS or already complete")
+        return None
     
-    tprint(f"❌ Failed to validate footage IDs after {max_retries} attempts")
-    return []
-
-def handle_lf_items(footage_ids, token):
-    """Automatically set LF items to Awaiting User Input and filter them out."""
-    lf_items = [fid for fid in footage_ids if fid.startswith("LF")]
-    
-    if lf_items:
-        tprint(f"🔄 Found {len(lf_items)} LF items - setting to 'Awaiting User Input'")
-        
-        # Batch update LF items to awaiting user input
-        for lf_id in lf_items:
-            try:
-                record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={lf_id}"})
-                if record_id:
-                    update_status(record_id, token, "Awaiting User Input")
-                    update_frame_statuses_for_footage(lf_id, token, "Awaiting User Input")
-                    tprint(f"  -> ✅ {lf_id}: Set to Awaiting User Input")
-                else:
-                    tprint(f"  -> ❌ {lf_id}: Record not found")
-            except Exception as e:
-                tprint(f"  -> ❌ {lf_id}: Error - {e}")
-    
-    # Return non-LF items for processing
-    non_lf_items = [fid for fid in footage_ids if not fid.startswith("LF")]
-    tprint(f"📋 Filtering: {len(non_lf_items)} non-LF items ready for processing")
-    
-    return non_lf_items
+    start_step = status_to_step.get(current_status, 1)
+    print(f"  -> Starting from step {start_step}")
+    return start_step
 
 def combine_metadata(record_data):
     """Combine all available metadata into a single text for evaluation."""
@@ -335,53 +270,6 @@ def evaluate_metadata_quality(record_data, token, record_id=None):
                 write_to_dev_console(record_id, token, fallback_msg)
             return False
 
-def check_frame_completion(token, footage_id):
-    """Check if ALL child frames are ready for Step 6 (description generation)."""
-    try:
-        # Get all child frames for this footage
-        frames_response = requests.post(
-            config.url("layouts/FRAMES/_find"),
-            headers=config.api_headers(token),
-            json={"query": [{"FRAMES_ParentID": footage_id}]},
-            verify=False,
-            timeout=10
-        )
-        
-        if frames_response.status_code == 404:
-            return False, "No frames found"
-        
-        if frames_response.status_code != 200:
-            return False, f"Error fetching frames: {frames_response.status_code}"
-        
-        frames = frames_response.json()['response']['data']
-        
-        if not frames:
-            return False, "No frames found"
-        
-        total_frames = len(frames)
-        completed_frames = 0
-        
-        for frame in frames:
-            frame_data = frame['fieldData']
-            frame_status = frame_data.get(FIELD_MAPPING["frame_status"], "")
-            caption = frame_data.get("FRAMES_Caption", "").strip()
-            
-            # Frame is ready for Step 6 if:
-            # 1. Status is "4 - Audio Transcribed" or higher, OR
-            # 2. Has caption content (caption step complete)
-            if (frame_status in ["4 - Audio Transcribed", "5 - Generating Embeddings", "6 - Embeddings Complete"] or
-                caption):  # Has caption (caption step done)
-                completed_frames += 1
-        
-        if completed_frames == total_frames:
-            return True, f"All {total_frames} frames ready for Step 6"
-        else:
-            return False, f"{completed_frames}/{total_frames} frames ready"
-            
-    except Exception as e:
-        tprint(f"⚠️ Error checking frame completion: {e}")
-        return False, f"Error: {e}"
-
 def write_to_dev_console(record_id, token, message):
     """Write a message to the AI_DevConsole field."""
     try:
@@ -393,7 +281,7 @@ def write_to_dev_console(record_id, token, message):
         config.update_record(token, "FOOTAGE", record_id, field_data)
         
     except Exception as e:
-        tprint(f"⚠️ WARNING: Failed to write to AI_DevConsole: {e}")
+        print(f"  -> WARNING: Failed to write to AI_DevConsole: {e}")
 
 def format_error_message(footage_id, step_name, error_details, error_type="Processing Error"):
     """Format error messages for the AI_DevConsole field in a user-friendly way."""
@@ -2027,299 +1915,6 @@ def run_streaming_pipeline_workflow(footage_ids, token, max_workers=20):
             tprint(f"  -> ... and {len(failures) - 5} more")
     
     return results
-
-def run_single_script(script_name, footage_id, token, timeout=300):
-    """Run a single script for a footage ID."""
-    script_path = JOBS_DIR / script_name
-    
-    if not script_path.exists():
-        return False, f"Script not found: {script_name}"
-    
-    try:
-        result = subprocess.run(
-            ["python3", str(script_path), footage_id, token],
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        
-        success = result.returncode == 0
-        error_msg = result.stderr.strip() if result.stderr else None
-        
-        return success, error_msg
-        
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {timeout}s"
-    except Exception as e:
-        return False, f"System error: {str(e)}"
-
-def get_current_record_data(record_id, token, max_retries=3):
-    """Get current record data from FileMaker with retry logic."""
-    current_token = token
-    
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(
-                config.url(f"layouts/FOOTAGE/records/{record_id}"), 
-                headers=config.api_headers(current_token), 
-                verify=False,
-                timeout=30
-            )
-            
-            if response.status_code == 401:
-                current_token = config.get_token()
-                continue
-            
-            response.raise_for_status()
-            return response.json()['response']['data'][0], current_token
-            
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-    
-    return None, current_token
-
-def process_single_footage(footage_id, token, queue_stats):
-    """Process a single footage item through the complete workflow."""
-    try:
-        tprint(f"🚀 Starting workflow for {footage_id}")
-        start_time = time.time()
-        
-        # Get record ID
-        record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
-        if not record_id:
-            tprint(f"❌ {footage_id}: Record not found")
-            return {"footage_id": footage_id, "success": False, "error": "Record not found"}
-        
-        # Get current record data and status
-        record_data, token = get_current_record_data(record_id, token)
-        if not record_data:
-            tprint(f"❌ {footage_id}: Failed to get record data")
-            return {"footage_id": footage_id, "success": False, "error": "Failed to get record data"}
-        
-        current_status = record_data['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
-        
-        # Check if already complete
-        if current_status in TERMINAL_STATES:
-            tprint(f"✅ {footage_id}: Already complete (status: {current_status})")
-            return {"footage_id": footage_id, "success": True, "error": None, "skipped": True}
-        
-        # Handle Force Resume
-        if current_status == "Force Resume":
-            tprint(f"🚀 {footage_id}: Force Resume - bypassing metadata evaluation")
-            write_to_dev_console(record_id, token, "FORCE RESUME triggered by user - bypassing metadata evaluation")
-            current_status = "5 - Processing Frame Info"  # Jump to step 5
-            update_status(record_id, token, current_status)
-        
-        # Process workflow steps
-        for step in WORKFLOW_STEPS:
-            step_num = step["step"]
-            status_before = step["status_before"]
-            status_after = step["status_after"]
-            script = step["script"]
-            description = step["description"]
-            timeout = step.get("timeout", 300)
-            
-            # Check if we should run this step
-            if isinstance(status_before, list):
-                should_run = current_status in status_before
-            else:
-                should_run = current_status == status_before
-            
-            if not should_run:
-                continue
-            
-            tprint(f"  -> Step {step_num}: {description}")
-            
-            # Handle conditional URL scraping
-            if step.get("conditional"):
-                url = record_data['fieldData'].get(FIELD_MAPPING["url"], '')
-                if not url or not url.strip():
-                    tprint(f"  -> {footage_id}: Skipping URL scraping - no URL available")
-                    current_status = status_after  # Skip to next status
-                    update_status(record_id, token, current_status)
-                    continue
-            
-            # Update status to processing state
-            update_status(record_id, token, status_after)
-            
-            # Run the script
-            success, error_msg = run_single_script(script, footage_id, token, timeout)
-            
-            if not success:
-                tprint(f"❌ {footage_id}: Step {step_num} failed - {error_msg}")
-                return {"footage_id": footage_id, "success": False, "error": f"Step {step_num}: {error_msg}"}
-            
-            tprint(f"✅ {footage_id}: Step {step_num} completed")
-            current_status = status_after
-            
-            # Handle metadata evaluation after step 4/5
-            if step.get("metadata_evaluation"):
-                # Get fresh record data for evaluation
-                record_data, token = get_current_record_data(record_id, token)
-                if record_data:
-                    metadata_good = evaluate_metadata_quality(record_data['fieldData'], token, record_id)
-                    if not metadata_good:
-                        tprint(f"⚠️ {footage_id}: Metadata quality insufficient - setting to Awaiting User Input")
-                        update_status(record_id, token, "Awaiting User Input")
-                        update_frame_statuses_for_footage(footage_id, token, "Awaiting User Input")
-                        return {"footage_id": footage_id, "success": True, "error": None, "awaiting_user": True}
-            
-            # Handle frame completion check for step 6
-            if step.get("requires_frame_completion"):
-                frames_ready, frame_status = check_frame_completion(token, footage_id)
-                if not frames_ready:
-                    tprint(f"⏳ {footage_id}: Waiting for frames - {frame_status}")
-                    return {"footage_id": footage_id, "success": False, "error": f"Frames not ready: {frame_status}"}
-            
-            # Handle final status for step 6
-            if step.get("final_status"):
-                final_status = step["final_status"]
-                tprint(f"🎯 {footage_id}: Setting final status to '{final_status}'")
-                update_status(record_id, token, final_status)
-                
-                # Move all frames to final status
-                update_frame_statuses_for_footage(footage_id, token, "5 - Generating Embeddings")
-                
-                current_status = final_status
-                break  # Workflow complete
-        
-        duration = time.time() - start_time
-        tprint(f"✅ {footage_id}: Workflow completed successfully ({duration:.1f}s)")
-        
-        return {"footage_id": footage_id, "success": True, "error": None, "duration": duration}
-        
-    except Exception as e:
-        duration = time.time() - start_time
-        error_msg = str(e)
-        tprint(f"❌ {footage_id}: Exception - {error_msg} ({duration:.1f}s)")
-        return {"footage_id": footage_id, "success": False, "error": error_msg, "duration": duration}
-
-def process_queued_batch(footage_ids, token, max_workers=5):
-    """Process footage IDs in protected batches with modern API protection."""
-    tprint(f"🚀 Starting modernized queued batch processing")
-    
-    # Initialize processing queue
-    queue = ModernProcessingQueue(token, max_workers=max_workers, batch_size=10)
-    queue.stats["total_items"] = len(footage_ids)
-    
-    # 1. Validate and filter IDs
-    tprint(f"📋 Phase 1: Validating {len(footage_ids)} footage IDs...")
-    valid_ids = validate_footage_ids(footage_ids, token)
-    
-    if not valid_ids:
-        tprint(f"❌ No valid footage IDs found")
-        queue.stats["failed"] = queue.stats["total_items"]
-        queue.stats["end_time"] = datetime.now().isoformat()
-        return queue.stats
-    
-    # 2. Handle LF items
-    tprint(f"📋 Phase 2: Handling LF items...")
-    processable_ids = handle_lf_items(valid_ids, token)
-    
-    if not processable_ids:
-        tprint(f"✅ All items were LF items - set to Awaiting User Input")
-        queue.stats["skipped"] = len(valid_ids)
-        queue.stats["end_time"] = datetime.now().isoformat()
-        return queue.stats
-    
-    # 3. Batch processing with controlled concurrency
-    tprint(f"📋 Phase 3: Processing {len(processable_ids)} items in batches...")
-    
-    batch_size = queue.batch_size
-    batches = [processable_ids[i:i+batch_size] for i in range(0, len(processable_ids), batch_size)]
-    
-    for batch_num, batch in enumerate(batches):
-        tprint(f"🔄 Processing batch {batch_num+1}/{len(batches)} ({len(batch)} items)")
-        
-        # Process batch with controlled concurrency
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_single_footage, footage_id, token, queue.stats) for footage_id in batch]
-            
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    result = future.result()
-                    queue.stats["results"].append(result)
-                    
-                    if result["success"]:
-                        if result.get("skipped") or result.get("awaiting_user"):
-                            queue.stats["skipped"] += 1
-                        else:
-                            queue.stats["successful"] += 1
-                    else:
-                        queue.stats["failed"] += 1
-                        
-                except Exception as e:
-                    tprint(f"❌ Future exception: {e}")
-                    queue.stats["failed"] += 1
-        
-        # API protection delay between batches
-        if batch_num < len(batches) - 1:
-            tprint(f"⏸️ API protection delay...")
-            time.sleep(2)  # 2-second pause between batches
-    
-    # Final summary
-    queue.stats["end_time"] = datetime.now().isoformat()
-    
-    tprint(f"\n=== QUEUED BATCH PROCESSING COMPLETE ===")
-    tprint(f"📊 Results: {queue.stats['successful']} successful, {queue.stats['failed']} failed, {queue.stats['skipped']} skipped")
-    
-    # Show failures
-    failures = [r for r in queue.stats["results"] if not r["success"]]
-    if failures:
-        tprint(f"❌ Failed items:")
-        for failure in failures[:5]:
-            tprint(f"  -> {failure['footage_id']}: {failure['error']}")
-        if len(failures) > 5:
-            tprint(f"  -> ... and {len(failures) - 5} more")
-    
-    return queue.stats
-
-def find_all_processable_items(token):
-    """Find all items that can be processed (auto-discovery mode)."""
-    all_items = []
-    
-    tprint(f"🔍 Auto-discovery: Finding all processable items...")
-    
-    for status in PICKUP_STATUSES:
-        try:
-            query = {
-                "query": [{FIELD_MAPPING["status"]: status}],
-                "limit": 100
-            }
-            
-            response = requests.post(
-                config.url("layouts/FOOTAGE/_find"),
-                headers=config.api_headers(token),
-                json=query,
-                verify=False,
-                timeout=30
-            )
-            
-            if response.status_code == 404:
-                continue  # No records with this status
-            
-            response.raise_for_status()
-            records = response.json()['response']['data']
-            
-            for record in records:
-                footage_id = record['fieldData'].get(FIELD_MAPPING["footage_id"])
-                if footage_id:
-                    all_items.append(footage_id)
-            
-            if records:
-                tprint(f"  -> Found {len(records)} items with status '{status}'")
-        
-        except Exception as e:
-            tprint(f"⚠️ Error finding items with status '{status}': {e}")
-            continue
-    
-    # Remove duplicates and sort
-    unique_items = sorted(list(set(all_items)))
-    tprint(f"📋 Auto-discovery: Found {len(unique_items)} unique processable items")
-    
-    return unique_items
 
 if __name__ == "__main__":
     try:

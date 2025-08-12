@@ -44,6 +44,8 @@ warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from utils.local_metadata_evaluator import evaluate_metadata_local
+from utils.status_cache import StatusCache
+from utils.batch_status_checker import BatchStatusChecker
 
 def tprint(message):
     """Print with timestamp for performance debugging."""
@@ -871,11 +873,16 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
     start_time = time.time()
     poll_count = 0
     
+    # Initialize status cache and batch checker for efficient API usage
+    status_cache = StatusCache(cache_duration_seconds=poll_interval)
+    batch_checker = BatchStatusChecker(token)
+    
     # Statistics tracking
     poll_stats = {
         "successful": 0,
         "failed": 0,
         "poll_cycles": 0,
+        "api_calls_saved": 0,
         "last_activity": start_time
     }
     
@@ -907,6 +914,11 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
         cycle_start = time.time()
         
         tprint(f"\n=== POLL CYCLE {poll_count} ===")
+        
+        # Clear expired cache entries and reset per-cycle logging  
+        status_cache.clear_expired_cache()
+        if hasattr(process_frame_task, '_logged_waiting'):
+            process_frame_task._logged_waiting.clear()
         
         cycle_successful = 0
         cycle_failed = 0
@@ -1051,6 +1063,11 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
             
             all_tasks = []
             
+            # Populate status cache with footage and frame records
+            # This enables efficient parent-child dependency checks
+            status_cache.add_footage_records(footage_records)
+            status_cache.add_frame_records(frame_records)
+            
             # Build a map of footage statuses for frame dependency checking
             footage_status_map = {}
             for footage_record in footage_records:
@@ -1139,7 +1156,7 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                     if task_type == "footage":
                         return process_footage_task(task, token)
                     else:  # frame
-                        return process_frame_task(task, token)
+                        return process_frame_task(task, token, status_cache)
                         
                 except Exception as e:
                     tprint(f"❌ Error processing {task.get('type', 'unknown')} {task.get('id', 'unknown')}: {e}")
@@ -1174,6 +1191,18 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                     
                     cycle_successful = completed_count
                     cycle_failed = failed_count
+                    
+                    # Handle any cache misses with batch status check
+                    unique_parents_needed = status_cache.get_unique_parents_needing_check()
+                    if unique_parents_needed:
+                        tprint(f"🔍 Batch checking {len(unique_parents_needed)} parent statuses for cache misses...")
+                        batch_checker.token = token  # Update token in case it changed
+                        batch_status_results = batch_checker.batch_check_footage_statuses(unique_parents_needed)
+                        
+                        if batch_status_results:
+                            status_cache.batch_update_footage_statuses(batch_status_results)
+                            poll_stats["api_calls_saved"] += len(unique_parents_needed) - 1  # Saved N-1 individual calls
+                            tprint(f"✅ Updated cache with {len(batch_status_results)} parent statuses")
             
         except Exception as e:
             tprint(f"❌ Error in poll cycle: {e}")
@@ -1216,6 +1245,14 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
     tprint(f"Poll cycles: {poll_stats['poll_cycles']}")
     tprint(f"Successful operations: {poll_stats['successful']}")
     tprint(f"Failed operations: {poll_stats['failed']}")
+    
+    # Cache performance stats
+    cache_stats = status_cache.get_stats()
+    tprint(f"🗄️ Cache performance:")
+    tprint(f"   API calls saved: {poll_stats['api_calls_saved']}")
+    tprint(f"   Cache hit rate: {cache_stats['hit_rate']:.1%}")
+    tprint(f"   Cache hits: {cache_stats['cache_hits']}")
+    tprint(f"   Cache misses: {cache_stats['cache_misses']}")
     
     return poll_stats
 
@@ -1365,7 +1402,7 @@ def process_footage_task(task, token):
     return steps_completed > 0
 
 
-def process_frame_task(task, token):
+def process_frame_task(task, token, status_cache=None):
     """Process a single frame record to its next step(s) - chain when possible."""
     frame_id = task["id"]
     current_status = task["current_status"]
@@ -1398,47 +1435,74 @@ def process_frame_task(task, token):
         
         # Skip parent dependency check and proceed directly to processing
     else:
-        # Check parent dependency first (normal flow)
+        # Check parent dependency first (normal flow) - USE STATUS CACHE
         parent_id = record_data.get(FIELD_MAPPING["frame_parent_id"])
         if parent_id:
-            try:
-                parent_response = requests.post(
-                    config.url("layouts/FOOTAGE/_find"),
-                    headers=config.api_headers(token),
-                    json={"query": [{"INFO_FTG_ID": parent_id}], "limit": 1},
-                    verify=False,
-                    timeout=10
-                )
+            # Use status cache if available, fall back to individual API call
+            if status_cache:
+                is_ready, parent_status = status_cache.is_parent_ready_for_frames(parent_id)
+                
+                if parent_status == "CACHE_MISS":
+                    # Cache miss - we'll handle this in batch later
+                    tprint(f"⏳ {frame_id}: Parent {parent_id} status not cached - skipping this cycle")
+                    return False
+                
+                if parent_status.startswith("TERMINAL_SUCCESS:"):
+                    actual_status = parent_status.split(":", 1)[1]
+                    tprint(f"✅ {frame_id}: Parent {parent_id} reached '{actual_status}' - frame processing complete")
+                    return True
+                
+                if not is_ready:
+                    # Don't spam logs - only log first check per cycle
+                    if not hasattr(process_frame_task, '_logged_waiting'):
+                        process_frame_task._logged_waiting = set()
+                    
+                    log_key = f"{frame_id}:{parent_id}:{parent_status}"
+                    if log_key not in process_frame_task._logged_waiting:
+                        tprint(f"⏳ {frame_id}: Parent {parent_id} still at '{parent_status}' - waiting")
+                        process_frame_task._logged_waiting.add(log_key)
+                    
+                    return False
+            else:
+                # Fallback to original individual API call logic
+                try:
+                    parent_response = requests.post(
+                        config.url("layouts/FOOTAGE/_find"),
+                        headers=config.api_headers(token),
+                        json={"query": [{"INFO_FTG_ID": parent_id}], "limit": 1},
+                        verify=False,
+                        timeout=10
+                    )
 
-                if parent_response.status_code == 200:
-                    parent_records = parent_response.json()['response']['data']
-                    if parent_records:
-                        parent_status = parent_records[0]['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
+                    if parent_response.status_code == 200:
+                        parent_records = parent_response.json()['response']['data']
+                        if parent_records:
+                            parent_status = parent_records[0]['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
 
-                        # If parent has reached terminal success states, frame processing is complete
-                        parent_terminal_success_statuses = [
-                            "8 - Applying Tags",
-                            "9 - Complete"
-                        ]
-                        
-                        if parent_status in parent_terminal_success_statuses:
-                            tprint(f"✅ {frame_id}: Parent {parent_id} reached '{parent_status}' - frame processing complete")
-                            return True  # Success - parent completed the workflow
-                        
-                        parent_ready_statuses = [
-                            "4 - Scraping URL",
-                            "5 - Processing Frame Info",
-                            "6 - Generating Description",
-                            "7 - Generating Embeddings",
-                            "Force Resume"  # Allow frames to process when parent is force resuming
-                        ]
+                            # If parent has reached terminal success states, frame processing is complete
+                            parent_terminal_success_statuses = [
+                                "8 - Applying Tags",
+                                "9 - Complete"
+                            ]
+                            
+                            if parent_status in parent_terminal_success_statuses:
+                                tprint(f"✅ {frame_id}: Parent {parent_id} reached '{parent_status}' - frame processing complete")
+                                return True  # Success - parent completed the workflow
+                            
+                            parent_ready_statuses = [
+                                "4 - Scraping URL",
+                                "5 - Processing Frame Info",
+                                "6 - Generating Description",
+                                "7 - Generating Embeddings",
+                                "Force Resume"  # Allow frames to process when parent is force resuming
+                            ]
 
-                        if parent_status not in parent_ready_statuses:
-                            tprint(f"⏳ {frame_id}: Parent {parent_id} still at '{parent_status}' - waiting")
-                            return False
+                            if parent_status not in parent_ready_statuses:
+                                tprint(f"⏳ {frame_id}: Parent {parent_id} still at '{parent_status}' - waiting")
+                                return False
 
-            except Exception as e:
-                tprint(f"⚠️ {frame_id}: Could not check parent status: {e}")
+                except Exception as e:
+                    tprint(f"⚠️ {frame_id}: Could not check parent status: {e}")
 
     # Track steps completed for chaining
     steps_completed = 0
