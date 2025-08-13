@@ -279,9 +279,11 @@ def process_frame_captions(token, frames):
         caption = frame_data.get("FRAMES_Caption", "").strip()
         
         # Need caption if:
-        # 1. Status is "2 - Thumbnail Complete", "Force Resume", or lower, and doesn't have caption
-        # 2. OR status is "3 - Caption Generated" but no caption content (stuck frame)
-        if ((status in [FRAME_STATUSES["THUMBNAIL_COMPLETE"], FRAME_STATUSES["PENDING_THUMBNAIL"], "Force Resume"] and not caption) or
+        # 1. Status is "Force Resume" (ALWAYS regenerate caption)
+        # 2. Status is "2 - Thumbnail Complete" or lower, and doesn't have caption  
+        # 3. OR status is "3 - Caption Generated" but no caption content (stuck frame)
+        if (status == "Force Resume" or  # Force Resume always needs caption regeneration
+            (status in [FRAME_STATUSES["THUMBNAIL_COMPLETE"], FRAME_STATUSES["PENDING_THUMBNAIL"]] and not caption) or
             (status == "3 - Caption Generated" and not caption)):
             frame_data["_processing_step"] = "caption"  # Mark for caption processing
             caption_needed_frames.append(frame)
@@ -389,7 +391,6 @@ def process_frame_audio_with_precheck(token, frames):
     
     # Get frames that need audio processing (including stuck frames)
     audio_needed_frames = []
-    skip_audio_frames = []  # Frames to mark as silent without processing
     
     for frame in frames:
         frame_data = frame['fieldData']
@@ -398,45 +399,20 @@ def process_frame_audio_with_precheck(token, frames):
         transcript = frame_data.get("FRAMES_Transcript", "").strip()
         
         # Need audio if:
-        # 1. Has caption but no transcript, and status is "3 - Caption Generated" or lower
-        # 2. OR status is "4 - Audio Transcribed" but no transcript content (stuck frame)
-        frame_needs_audio = ((caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete", "Force Resume"]) or
+        # 1. Status is "Force Resume" and has caption (regenerate audio after caption)
+        # 2. Has caption but no transcript, and status is "3 - Caption Generated" or lower
+        # 3. OR status is "4 - Audio Transcribed" but no transcript content (stuck frame)
+        frame_needs_audio = ((status == "Force Resume" and caption) or  # Force Resume with caption needs audio regeneration
+                           (caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete"]) or
                            (status == "4 - Audio Transcribed" and not transcript))
         
         if frame_needs_audio:
-            if has_audio is False:
-                # Video has no audio - mark frame as silent without processing
-                skip_audio_frames.append(frame)
-            else:
-                # Video has audio or unknown - process normally
-                frame_data["_processing_step"] = "audio"
-                audio_needed_frames.append(frame)
+            # All frames that need audio should be processed normally
+            # Bulk silent detection will handle silent videos AFTER all frames have captions
+            frame_data["_processing_step"] = "audio"
+            audio_needed_frames.append(frame)
     
-    # Fast-track silent frames (no audio processing needed)
-    if skip_audio_frames:
-        print(f"  -> 📵 Fast-tracking {len(skip_audio_frames)} frames as silent (no audio streams)")
-        silent_success = 0
-        
-        for frame in skip_audio_frames:
-            frame_record_id = frame['recordId']
-            frame_id = frame['fieldData'].get(FIELD_MAPPING["frame_id"], frame_record_id)
-            
-            try:
-                # Update frame with empty transcript and "Audio Transcribed" status
-                update_data = {
-                    "FRAMES_Transcript": "",
-                    FIELD_MAPPING["frame_status"]: "4 - Audio Transcribed"
-                }
-                
-                if update_frame_status_with_transcript(token, frame_record_id, update_data):
-                    print(f"    -> ✅ Marked frame {frame_id} as silent")
-                    silent_success += 1
-                else:
-                    print(f"    -> ❌ Failed to mark frame {frame_id} as silent")
-            except Exception as e:
-                print(f"    -> ❌ Error marking frame {frame_id} as silent: {e}")
-        
-        print(f"  -> Silent frames: {silent_success}/{len(skip_audio_frames)} marked")
+    # Individual fast-track logic removed - bulk silent detection handles this properly
     
     # Process remaining frames that need actual audio transcription
     if not audio_needed_frames:
@@ -695,7 +671,8 @@ def process_frames_continuous_flow(token, frames, footage_id, estimated_timeout)
             caption = current_frame['fieldData'].get("FRAMES_Caption", "").strip()
             
             # Step 2: Caption (if needed)
-            if current_status in ["2 - Thumbnail Complete", "1 - Pending Thumbnail", "Force Resume"] and not caption:
+            if (current_status == "Force Resume" or 
+                (current_status in ["2 - Thumbnail Complete", "1 - Pending Thumbnail"] and not caption)):
                 tprint(f"[FLOW] {frame_id}: Generating caption...")
                 if not run_frame_script_with_retry("frames_generate_captions.py", frame_id, token, timeout=120, max_retries=2):
                     tprint(f"[FLOW] {frame_id}: ❌ Caption failed")
@@ -714,28 +691,16 @@ def process_frames_continuous_flow(token, frames, footage_id, estimated_timeout)
             transcript = current_frame['fieldData'].get("FRAMES_Transcript", "").strip()
             
             # Step 3: Audio (if needed)
-            needs_audio = (caption and not transcript and current_status in ["3 - Caption Generated", "2 - Thumbnail Complete"])
+            needs_audio = ((current_status == "Force Resume" and caption) or  # Force Resume with caption needs audio
+                          (caption and not transcript and current_status in ["3 - Caption Generated", "2 - Thumbnail Complete"]))
             
             if needs_audio:
-                if has_audio is False:
-                    # Fast-track silent video
-                    tprint(f"[FLOW] {frame_id}: Fast-tracking as silent...")
-                    update_data = {
-                        "FRAMES_Transcript": "",
-                        FIELD_MAPPING["frame_status"]: "4 - Audio Transcribed"
-                    }
-                    if update_frame_status_with_transcript(token, frame_record_id, update_data):
-                        tprint(f"[FLOW] {frame_id}: ✅ Marked as silent")
-                    else:
-                        tprint(f"[FLOW] {frame_id}: ❌ Failed to mark as silent")
-                        return False
-                else:
-                    # Process audio normally
-                    tprint(f"[FLOW] {frame_id}: Transcribing audio...")
-                    if not run_frame_script_with_retry("frames_transcribe_audio.py", frame_id, token, timeout=180, max_retries=2):
-                        tprint(f"[FLOW] {frame_id}: ❌ Audio failed")
-                        return False
-                    tprint(f"[FLOW] {frame_id}: ✅ Audio complete")
+                # Process normally - bulk silent detection will handle silent videos properly
+                tprint(f"[FLOW] {frame_id}: Transcribing audio...")
+                if not run_frame_script_with_retry("frames_transcribe_audio.py", frame_id, token, timeout=180, max_retries=2):
+                    tprint(f"[FLOW] {frame_id}: ❌ Audio failed")
+                    return False
+                tprint(f"[FLOW] {frame_id}: ✅ Audio complete")
             
             tprint(f"[FLOW] {frame_id}: ✅ COMPLETE")
             return True
@@ -877,28 +842,25 @@ def monitor_and_process_frames_continuously(token, footage_id, estimated_timeout
             
             # Check if frame is complete
             # Frame is ready for Step 6 if:
-            # 1. Status is "4 - Audio Transcribed" or higher (audio step complete, regardless of transcript content), OR
-            # 2. Has caption content (caption step complete)
-            # Note: This matches the completion criteria used in the polling workflow
-            if (status in ["4 - Audio Transcribed", "5 - Generating Embeddings", "6 - Embeddings Complete"] or
-                caption):  # Has caption (caption step done)
+            # 1. Status is "4 - Audio Transcribed" AND has caption content (fully complete), OR
+            # 2. Status is higher than "4 - Audio Transcribed" (handled by PSOS)
+            # Note: We require BOTH status progression AND content to prevent premature Step 6 trigger
+            if (status == "4 - Audio Transcribed" and caption) or status in ["5 - Generating Embeddings", "6 - Embeddings Complete", "6 - Complete"]:
                 total_ready += 1
                 completed_frames.add(frame_id)
                 continue
             
             # Frame needs caption
-            if (status == "2 - Thumbnail Complete" or status == "Force Resume") and not caption:
+            if (status == "Force Resume" or 
+                (status == "2 - Thumbnail Complete" and not caption)):
                 frames_needing_captions.append(frame)
             # Frame needs caption retry (has status but no content)
             elif status == "3 - Caption Generated" and not caption:
                 frames_stuck.append((frame, "caption"))
-            # Frame needs audio
-            elif caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete", "Force Resume"]:
-                if has_audio is False:
-                    # Silent video - fast track
-                    frames_needing_audio.append((frame, "silent"))
-                else:
-                    frames_needing_audio.append((frame, "audio"))
+            # Frame needs audio (only for frames with captions)
+            elif ((status == "Force Resume" and caption) or 
+                  (caption and not transcript and status in ["3 - Caption Generated", "2 - Thumbnail Complete"])):
+                frames_needing_audio.append((frame, "audio"))
             # Frame needs audio retry (has status but no content)
             elif status == "4 - Audio Transcribed" and not transcript and has_audio is not False:
                 frames_stuck.append((frame, "audio"))
@@ -1090,23 +1052,35 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  -> Warning: Could not get footage filepath for bulk detection: {e}")
         
-        # Quick bulk audio detection
-        if footage_filepath and os.path.exists(footage_filepath):
-            print(f"  -> 🔍 Checking if {footage_id} is silent...")
+        # Check if ALL frames have captions before attempting bulk silent detection
+        frames_with_captions = 0
+        total_frames = len(frames)
+        
+        for frame in frames:
+            frame_data = frame['fieldData']
+            caption = frame_data.get("FRAMES_Caption", "").strip()
+            if caption:
+                frames_with_captions += 1
+        
+        print(f"  -> 📊 Caption status: {frames_with_captions}/{total_frames} frames have captions")
+        
+        # ONLY apply bulk silent detection if ALL frames have captions
+        if frames_with_captions == total_frames and footage_filepath and os.path.exists(footage_filepath):
+            print(f"  -> 🔍 All frames have captions - checking if {footage_id} is silent...")
             has_audio = check_video_has_audio(footage_filepath)
             
             if has_audio is False:
-                print(f"  -> 📵 Video is SILENT - bulk updating ALL frames!")
+                print(f"  -> 📵 Video is SILENT - bulk updating ALL frames with captions!")
                 
-                # Count frames that need bulk update
+                # Count frames that need bulk update (should be all of them since they all have captions)
                 frames_needing_update = []
                 for frame in frames:
                     frame_data = frame['fieldData']
                     status = frame_data.get(FIELD_MAPPING["frame_status"])
                     transcript = frame_data.get("FRAMES_Transcript", "").strip()
                     
-                    # Update if not already at "4 - Audio Transcribed" with empty transcript
-                    if status != "4 - Audio Transcribed" or transcript:
+                    # Update if not already at "4 - Audio Transcribed"
+                    if status != "4 - Audio Transcribed":
                         frames_needing_update.append(frame)
                 
                 if frames_needing_update:
@@ -1145,7 +1119,7 @@ if __name__ == "__main__":
                     print(f"  -> 🎉 BULK UPDATE COMPLETE: {bulk_success}/{len(frames_needing_update)} frames updated")
                     
                     if bulk_success == len(frames_needing_update):
-                        print(f"✅ Silent video optimization: ALL {len(frames)} frames marked as completed!")
+                        print(f"✅ Silent video optimization: ALL {total_frames} frames completed!")
                         print(f"🚀 {footage_id} ready for Step 6: Generate Description")
                         sys.exit(0)  # Successfully completed via bulk update
                     else:
@@ -1154,13 +1128,13 @@ if __name__ == "__main__":
                     print(f"  -> ✅ All frames already marked as silent - nothing to update")
                     print(f"✅ Frame processing completed for silent video {footage_id}")
                     sys.exit(0)
-                    
-            elif has_audio is True:
-                print(f"  -> 🔊 Video HAS audio streams - proceeding with individual frame processing")
             else:
-                print(f"  -> ⚠️ Could not detect audio - proceeding with individual frame processing")
+                print(f"  -> 🔊 Video has audio - will transcribe individual frames")
         else:
-            print(f"  -> ⚠️ File not accessible for bulk detection - proceeding with individual processing")
+            if frames_with_captions < total_frames:
+                print(f"  -> ⏳ Skipping bulk silent detection - {total_frames - frames_with_captions} frames still need captions")
+            else:
+                print(f"  -> ⚠️ Cannot check audio - footage file not accessible")
         
         # Step 3: Individual frame processing (for videos with audio or detection failures)
         # Estimate timeout based on video characteristics

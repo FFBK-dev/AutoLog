@@ -150,7 +150,7 @@ POLLING_TARGETS = [
         "timeout": 600,
         "max_workers": 12,  # AI/OpenAI calls - can parallelize well
         "requires_frame_completion": True,  # Must wait for all frames to be ready
-        "update_frame_statuses_after": "5 - Generating Embeddings"  # Move frames to next step after parent completes
+        # NOTE: Frames should NEVER be moved beyond "4 - Audio Transcribed" - PSOS handles the rest
     },
     # NOTE: "Awaiting User Input" is now a true terminal state
     # Users must manually change status (e.g., to "Force Resume") to resume processing
@@ -233,11 +233,10 @@ def check_frame_completion(token, footage_id):
             caption = frame_data.get("FRAMES_Caption", "").strip()
             
             # Frame is ready for Step 6 if:
-            # 1. Status is "4 - Audio Transcribed" or higher (audio step complete, regardless of transcript content), OR
-            # 2. Has caption content (caption step complete)
-            # Note: This matches the completion criteria used throughout the codebase
-            if (frame_status in ["4 - Audio Transcribed", "5 - Generating Embeddings", "6 - Embeddings Complete"] or
-                caption):  # Has caption (caption step done)
+            # 1. Status is "4 - Audio Transcribed" AND has caption content (fully complete), OR
+            # 2. Status is higher than "4 - Audio Transcribed" (handled by PSOS)
+            # Note: We require BOTH status progression AND content to prevent premature Step 6 trigger
+            if (frame_status == "4 - Audio Transcribed" and caption) or frame_status in ["5 - Generating Embeddings", "6 - Embeddings Complete", "6 - Complete"]:
                 completed_frames += 1
         
         if completed_frames == total_frames:
@@ -804,14 +803,24 @@ def check_all_records_terminal(token, footage_terminal_states, frame_terminal_st
         if footage_response.status_code == 200:
             footage_records = footage_response.json()['response']['data']
             non_terminal_footage = 0
+            status_counts = {}
             
             for record in footage_records:
                 current_status = record['fieldData'].get(FIELD_MAPPING["status"], "Unknown")
+                
+                # Track status counts for debugging
+                status_counts[current_status] = status_counts.get(current_status, 0) + 1
+                
                 if current_status not in footage_terminal_states and current_status != "Unknown":
                     non_terminal_footage += 1
             
             if non_terminal_footage > 0:
                 tprint(f"📊 Completion check: {non_terminal_footage} footage records still processing")
+                # Show status breakdown for debugging
+                non_terminal_statuses = {status: count for status, count in status_counts.items() 
+                                       if status not in footage_terminal_states and status != "Unknown"}
+                if non_terminal_statuses:
+                    tprint(f"📋 Non-terminal status breakdown: {non_terminal_statuses}")
                 return False
         
         # Check all frame records
@@ -839,10 +848,14 @@ def check_all_records_terminal(token, footage_terminal_states, frame_terminal_st
                         footage_status_map[footage_id] = footage_status
             
             non_terminal_frames = 0
+            frame_status_counts = {}
             
             for record in frame_records:
                 current_status = record['fieldData'].get(FIELD_MAPPING["frame_status"], "Unknown")
                 parent_id = record['fieldData'].get(FIELD_MAPPING["frame_parent_id"])
+                
+                # Track status counts for debugging
+                frame_status_counts[current_status] = frame_status_counts.get(current_status, 0) + 1
                 
                 # Consider frames with completed parents as effectively terminal
                 if parent_id and parent_id in footage_status_map:
@@ -855,6 +868,11 @@ def check_all_records_terminal(token, footage_terminal_states, frame_terminal_st
             
             if non_terminal_frames > 0:
                 tprint(f"📊 Completion check: {non_terminal_frames} frame records still processing")
+                # Show status breakdown for debugging
+                non_terminal_frame_statuses = {status: count for status, count in frame_status_counts.items() 
+                                             if status not in frame_terminal_states and status != "Unknown"}
+                if non_terminal_frame_statuses:
+                    tprint(f"📋 Non-terminal frame status breakdown: {non_terminal_frame_statuses}")
                 return False
         
         tprint(f"✅ Completion check: All records have reached terminal states!")
@@ -894,8 +912,10 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
         "Awaiting User Input"
     ]
     frame_terminal_states = [
+        "4 - Audio Transcribed",    # Terminal for this workflow - PSOS handles beyond here
         "5 - Generating Embeddings", 
-        "6 - Embeddings Complete", 
+        "6 - Embeddings Complete",
+        "6 - Complete",             # Terminal completion states (handled by PSOS)
         "Awaiting User Input"
     ]
     
@@ -1101,7 +1121,7 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                 if parent_id and parent_id in footage_status_map:
                     parent_status = footage_status_map[parent_id]
                     if parent_status in ["8 - Applying Tags", "9 - Complete"]:
-                        # Skip this frame - parent has completed workflow
+                        # Skip this frame - parent has fully completed workflow
                         continue
                 
                 if frame_id and current_status not in frame_terminal_states and current_status != "Unknown":
@@ -1414,25 +1434,8 @@ def process_frame_task(task, token, status_cache=None):
     if current_status == "Force Resume":
         tprint(f"🚀 FRAME FORCE RESUME: {frame_id}")
         
-        # Start from "2 - Thumbnail Complete" and process through all steps
-        current_status = "2 - Thumbnail Complete"
-        
-        # Update the frame status immediately
-        try:
-            payload = {"fieldData": {FIELD_MAPPING["frame_status"]: current_status}}
-            response = requests.patch(
-                config.url(f"layouts/FRAMES/records/{task['record_id']}"),
-                headers=config.api_headers(token),
-                json=payload,
-                verify=False,
-                timeout=30
-            )
-            response.raise_for_status()
-            tprint(f"✅ {frame_id}: Status updated to '{current_status}' for force resume")
-        except Exception as e:
-            tprint(f"❌ {frame_id}: Failed to update status for force resume: {e}")
-            return False
-        
+        # Force Resume means regenerate caption and audio  
+        tprint(f"✅ {frame_id}: Force Resume - will regenerate caption and audio")
         # Skip parent dependency check and proceed directly to processing
     else:
         # Check parent dependency first (normal flow) - USE STATUS CACHE
@@ -1481,8 +1484,9 @@ def process_frame_task(task, token, status_cache=None):
 
                             # If parent has reached terminal success states, frame processing is complete
                             parent_terminal_success_statuses = [
-                                "8 - Applying Tags",
+                                "8 - Applying Tags",  # Parent fully completed - frames definitely done
                                 "9 - Complete"
+                                # NOTE: "7 - Generating Embeddings" removed - frames may still need to reach "4 - Audio Transcribed"
                             ]
                             
                             if parent_status in parent_terminal_success_statuses:
@@ -1514,6 +1518,7 @@ def process_frame_task(task, token, status_cache=None):
             "1 - Pending Thumbnail": ("frames_generate_thumbnails.py", "2 - Thumbnail Complete"),
             "2 - Thumbnail Complete": ("frames_generate_captions.py", "3 - Caption Generated"),
             "3 - Caption Generated": ("frames_transcribe_audio.py", "4 - Audio Transcribed"),
+            "Force Resume": ("frames_generate_captions.py", "3 - Caption Generated"),  # Force Resume → Caption → Audio
         }
 
         if current_status in status_map:
@@ -1557,14 +1562,9 @@ def run_footage_script(footage_id, script_name, next_status, final_status, token
                 tprint(f"🔄 {footage_id}: Script completed, updating to final status '{final_status}'")
                 update_status(record_id, token, final_status)
                 
-                # Move all child frames to next step
-                tprint(f"🔄 {footage_id}: Moving all child frames to '5 - Generating Embeddings'")
-                frame_update_success = update_frame_statuses_for_footage(footage_id, token, "5 - Generating Embeddings")
-                
-                if frame_update_success:
-                    tprint(f"✅ {footage_id}: Successfully moved to {final_status}, frames to 5 - Generating Embeddings")
-                else:
-                    tprint(f"❌ {footage_id}: Failed to update frame statuses - frames may still be stuck at '4 - Audio Transcribed'")
+                # NOTE: We do NOT update frame statuses beyond "4 - Audio Transcribed"
+                # PSOS scripts will handle frame progression from here
+                tprint(f"✅ {footage_id}: Successfully moved to {final_status} (frames remain at their current status for PSOS)")
             else:
                 tprint(f"✅ {footage_id}: Script completed, no final status to set")
             

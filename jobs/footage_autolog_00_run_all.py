@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+"""
+Modernized Footage AutoLog Run-All Workflow Controller
+
+This script provides queued processing of footage IDs with modern API protection:
+1. Accepts payload IDs through arguments or auto-discovers pending items
+2. Uses StatusCache and BatchStatusChecker for API efficiency
+3. Implements step 6 as final step (stops at "7 - Generating Embeddings")
+4. Handles LF items and Force Resume properly
+5. Conservative concurrency to prevent FileMaker API overload
+
+Usage:
+  python3 footage_autolog_00_run_all.py                    # Auto-discovery mode
+  python3 footage_autolog_00_run_all.py '["FTG123", ...]'  # Payload mode
+  python3 footage_autolog_00_run_all.py FTG123             # Single item mode
+"""
+
 import subprocess
 import sys
 import time
@@ -1829,13 +1845,14 @@ def find_pending_items(token):
         print(f"❌ Error finding pending items: {e}")
         return []
 
+# Legacy function - replaced by find_all_processable_items
 def find_resume_processing_items(token):
-    """Find all items with 'Resume Processing' status (user-triggered resume from step 5)."""
+    """DEPRECATED: Find all items with 'Force Resume' status (modern name)."""
     try:
-        print(f"🔍 Searching for items with 'Resume Processing' status...")
+        tprint(f"🔍 Searching for items with 'Force Resume' status...")
         
         query = {
-            "query": [{FIELD_MAPPING["status"]: "Resume Processing"}],
+            "query": [{FIELD_MAPPING["status"]: "Force Resume"}],
             "limit": 100
         }
         
@@ -1847,7 +1864,7 @@ def find_resume_processing_items(token):
         )
         
         if response.status_code == 404:
-            print(f"📋 No resume processing items found")
+            tprint(f"📋 No Force Resume items found")
             return []
         
         response.raise_for_status()
@@ -1860,11 +1877,11 @@ def find_resume_processing_items(token):
             if footage_id:
                 footage_ids.append(footage_id)
         
-        print(f"📋 Found {len(footage_ids)} resume processing items: {footage_ids[:10]}{'...' if len(footage_ids) > 10 else ''}")
+        tprint(f"📋 Found {len(footage_ids)} Force Resume items: {footage_ids[:10]}{'...' if len(footage_ids) > 10 else ''}")
         return footage_ids
         
     except Exception as e:
-        print(f"❌ Error finding resume processing items: {e}")
+        tprint(f"❌ Error finding Force Resume items: {e}")
         return []
 
 def find_awaiting_user_input_items(token):
@@ -2323,59 +2340,60 @@ def find_all_processable_items(token):
 
 if __name__ == "__main__":
     try:
+        # Mount required network volumes at startup
+        tprint(f"🔧 Mounting network volumes...")
+        
+        try:
+            # Mount footage volume
+            if config.mount_volume("footage"):
+                tprint(f"✅ Footage volume (FTG_E2E) mounted successfully")
+            else:
+                tprint(f"⚠️ Failed to mount footage volume (FTG_E2E)")
+            
+            # Mount stills volume  
+            if config.mount_volume("stills"):
+                tprint(f"✅ Stills volume (6 E2E) mounted successfully")
+            else:
+                tprint(f"⚠️ Failed to mount stills volume (6 E2E)")
+                
+        except Exception as e:
+            tprint(f"❌ Error during volume mounting: {e}")
+        
         token = config.get_token()
         
-        # Find items at all pickup points
-        pending_items = find_pending_items(token)
-        resume_processing_items = find_resume_processing_items(token)
-        awaiting_user_input_items = find_awaiting_user_input_items(token)
+        # Parse input IDs from arguments or discover automatically
+        if len(sys.argv) > 1:
+            # Payload mode: Process specific IDs
+            footage_ids_json = sys.argv[1]
+            try:
+                footage_ids = json.loads(footage_ids_json)
+                if not isinstance(footage_ids, list):
+                    footage_ids = [str(footage_ids)]  # Convert single ID to list
+                tprint(f"📋 Payload mode: Processing {len(footage_ids)} specified items")
+            except json.JSONDecodeError:
+                # Treat as single ID if not valid JSON
+                footage_ids = [footage_ids_json]
+                tprint(f"📋 Payload mode: Processing single item '{footage_ids_json}'")
+        else:
+            # Discovery mode: Find pending items automatically
+            footage_ids = find_all_processable_items(token)
+            tprint(f"📋 Discovery mode: Found {len(footage_ids)} items to process")
         
-        # Handle resume processing items - set their status to "5 - Processing Frame Info" and reset frame statuses
-        if resume_processing_items:
-            print(f"🔄 Setting 'Resume Processing' items to '5 - Processing Frame Info' status...")
-            for footage_id in resume_processing_items:
-                try:
-                    record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
-                    if update_status(record_id, token, "5 - Processing Frame Info"):
-                        print(f"  -> ✅ Set {footage_id} to '5 - Processing Frame Info'")
-                        
-                        # Reset child frame statuses to "2 - Thumbnail Complete" so they can be processed again
-                        print(f"  -> 🔄 Resetting frame statuses for {footage_id} to '2 - Thumbnail Complete'...")
-                        if update_frame_statuses_for_footage(footage_id, token, "2 - Thumbnail Complete"):
-                            print(f"  -> ✅ Reset frame statuses for {footage_id}")
-                        else:
-                            print(f"  -> ⚠️ Failed to reset frame statuses for {footage_id} (continuing anyway)")
-                    else:
-                        print(f"  -> ❌ Failed to set {footage_id} status")
-                except Exception as e:
-                    print(f"  -> ❌ Error setting {footage_id} status: {e}")
-        
-        # Combine all items (avoiding duplicates)
-        all_items = list(set(pending_items + resume_processing_items + awaiting_user_input_items))
-        
-        if not all_items:
-            print(f"✅ No items found for processing")
+        if not footage_ids:
+            tprint("✅ No items to process")
             sys.exit(0)
         
-        print(f"📋 Total unique items to process: {len(all_items)}")
-        if pending_items:
-            print(f"  - {len(pending_items)} pending items (starting from step 1)")
-        if resume_processing_items:
-            print(f"  - {len(resume_processing_items)} resume processing items (starting from step 5)")
-        if awaiting_user_input_items:
-            print(f"  - {len(awaiting_user_input_items)} awaiting user input items (resume after user metadata)")
+        # Process with modern queued approach
+        results = process_queued_batch(footage_ids, token, max_workers=5)
         
-        # Process items using streaming pipeline for maximum throughput
-        print(f"🚀 Using STREAMING PIPELINE processing for maximum throughput")
-        tprint(f"🎯 Each item flows independently through all 6 steps - no waiting!")
-        results = run_streaming_pipeline_workflow(all_items, token)
+        # Output results
+        print(f"RESULTS: {json.dumps(results, indent=2)}")
+        sys.exit(0 if results['failed'] == 0 else 1)
         
-        # Output results as JSON for easy parsing
-        print(f"STREAMING_RESULTS: {json.dumps(results, indent=2)}")
-        
-        # Exit with success if all items succeeded
-        sys.exit(0 if results["failed"] == 0 else 1)
-            
+    except KeyboardInterrupt:
+        tprint(f"🛑 Processing interrupted by user")
+        sys.exit(0)
     except Exception as e:
-        print(f"Critical startup error: {e}")
+        tprint(f"❌ Critical error: {e}")
+        traceback.print_exc()
         sys.exit(1) 
