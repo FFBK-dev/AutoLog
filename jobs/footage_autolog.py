@@ -1427,6 +1427,7 @@ def process_frame_task(task, token, status_cache=None):
     frame_id = task["id"]
     current_status = task["current_status"]
     record_data = task["record_data"]
+    original_status = current_status  # Remember the original status
 
     # Only log significant events, not routine processing
 
@@ -1537,6 +1538,23 @@ def process_frame_task(task, token, status_cache=None):
         else:
             # No more steps to process
             break
+    
+    # FIX: For Force Resume frames that completed processing, ensure final status is properly set
+    if original_status == "Force Resume" and steps_completed > 0 and current_status == "4 - Audio Transcribed":
+        try:
+            # Explicitly update the frame status to terminal state to prevent re-processing
+            payload = {"fieldData": {FIELD_MAPPING["frame_status"]: "4 - Audio Transcribed"}}
+            response = requests.patch(
+                config.url(f"layouts/FRAMES/records/{task['record_id']}"),
+                headers=config.api_headers(token),
+                json=payload,
+                verify=False,
+                timeout=30
+            )
+            response.raise_for_status()
+            tprint(f"🎯 {frame_id}: Force Resume completed - status finalized to '4 - Audio Transcribed'")
+        except Exception as e:
+            tprint(f"⚠️ {frame_id}: Failed to finalize status: {e}")
     
     if steps_completed > 1:
         tprint(f"🚀 {frame_id}: Completed {steps_completed} steps in this cycle!")
