@@ -8,13 +8,13 @@ The `avid-find-similar` endpoint provides AI-powered similarity search across yo
 
 ### Base URL
 ```
-http://10.0.222.144:8081
+http://YOUR_SERVER_IP:8081
 ```
 
 ### Authentication
 All requests require the API key header:
 ```
-X-API-Key: supersecret
+X-API-Key: your_api_key
 ```
 
 ### Content Type
@@ -78,63 +78,63 @@ GET /job/{job_id}
 ### 1. Test Stills Similarity Search
 ```bash
 # Submit job
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["S01000"]}'
 
 # Expected response:
 # {"job_id": "avid-find-similar_X_XXXXXXXXXX", "submitted": true}
 
 # Check status (replace with actual job_id)
-curl -H "X-API-Key: supersecret" \
-  "http://10.0.222.144:8081/job/avid-find-similar_X_XXXXXXXXXX"
+curl -H "X-API-Key: your_api_key" \
+  "http://YOUR_SERVER_IP:8081/job/avid-find-similar_X_XXXXXXXXXX"
 ```
 
 ### 2. Test Live Footage Similarity Search
 ```bash
 # Submit job
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["LF0022"]}'
 
 # Check status (replace with actual job_id)
-curl -H "X-API-Key: supersecret" \
-  "http://10.0.222.144:8081/job/avid-find-similar_X_XXXXXXXXXX"
+curl -H "X-API-Key: your_api_key" \
+  "http://YOUR_SERVER_IP:8081/job/avid-find-similar_X_XXXXXXXXXX"
 ```
 
 ### 3. Test Archival Footage Similarity Search
 ```bash
 # Submit job
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["AF0009"]}'
 
 # Check status (replace with actual job_id)
-curl -H "X-API-Key: supersecret" \
-  "http://10.0.222.144:8081/job/avid-find-similar_X_XXXXXXXXXX"
+curl -H "X-API-Key: your_api_key" \
+  "http://YOUR_SERVER_IP:8081/job/avid-find-similar_X_XXXXXXXXXX"
 ```
 
 ### 4. Test ID Cleaning (with suffixes)
 ```bash
 # Test with stills ID that has suffixes
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["S01000.sub.01"]}'
 
 # Test with live footage ID that has suffixes  
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["LF0022_test.mov"]}'
 
 # Test with archival footage ID that has suffixes
-curl -X POST "http://10.0.222.144:8081/run/avid-find-similar" \
+curl -X POST "http://YOUR_SERVER_IP:8081/run/avid-find-similar" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: supersecret" \
+  -H "X-API-Key: your_api_key" \
   -d '{"args": ["AF0009.final"]}'
 ```
 
@@ -190,8 +190,8 @@ The system automatically cleans input IDs:
 ```javascript
 class SimilaritySearchAPI {
   constructor() {
-    this.baseURL = 'http://10.0.222.144:8081';
-    this.apiKey = 'supersecret';
+    this.baseURL = 'http://YOUR_SERVER_IP:8081';
+    this.apiKey = 'your_api_key';
     this.headers = {
       'Content-Type': 'application/json',
       'X-API-Key': this.apiKey
@@ -352,7 +352,7 @@ async function safeSearchSimilar(mediaId) {
 ### Common Issues
 
 1. **401 Unauthorized**
-   - Check API key: `X-API-Key: supersecret`
+   - Check API key: `X-API-Key: your_api_key`
 
 2. **404 Job Not Found**  
    - Verify job_id from submission response
@@ -375,7 +375,7 @@ async function safeSearchSimilar(mediaId) {
 
 For integration support or issues:
 1. Test with provided curl commands first
-2. Verify network connectivity to `10.0.222.144:8081`
+2. Verify network connectivity to `YOUR_SERVER_IP:8081`
 3. Check API key configuration
 4. Use test media IDs to isolate issues
 

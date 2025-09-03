@@ -860,7 +860,7 @@ def check_all_records_terminal(token, footage_terminal_states, frame_terminal_st
                 # Consider frames with completed parents as effectively terminal
                 if parent_id and parent_id in footage_status_map:
                     parent_status = footage_status_map[parent_id]
-                    if parent_status in ["8 - Applying Tags", "9 - Complete"]:
+                    if parent_status in ["8 - Applying Tags", "9 - Avid Description", "10 - Complete"]:
                         continue  # Skip - parent completed, so frame is effectively done
                 
                 if current_status not in frame_terminal_states and current_status != "Unknown":
@@ -908,7 +908,8 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
     footage_terminal_states = [
         "7 - Generating Embeddings", 
         "8 - Applying Tags", 
-        "9 - Complete", 
+        "9 - Avid Description",
+        "10 - Complete", 
         "Awaiting User Input"
     ]
     frame_terminal_states = [
@@ -1120,7 +1121,7 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                 # Skip frames if their parent has reached terminal success states
                 if parent_id and parent_id in footage_status_map:
                     parent_status = footage_status_map[parent_id]
-                    if parent_status in ["8 - Applying Tags", "9 - Complete"]:
+                    if parent_status in ["8 - Applying Tags", "9 - Avid Description", "10 - Complete"]:
                         # Skip this frame - parent has fully completed workflow
                         continue
                 
@@ -1486,7 +1487,8 @@ def process_frame_task(task, token, status_cache=None):
                             # If parent has reached terminal success states, frame processing is complete
                             parent_terminal_success_statuses = [
                                 "8 - Applying Tags",  # Parent fully completed - frames definitely done
-                                "9 - Complete"
+                                "9 - Avid Description",
+                                "10 - Complete"
                                 # NOTE: "7 - Generating Embeddings" removed - frames may still need to reach "4 - Audio Transcribed"
                             ]
                             
@@ -1631,15 +1633,15 @@ if __name__ == "__main__":
         try:
             # Mount footage volume
             if config.mount_volume("footage"):
-                tprint(f"✅ Footage volume (FTG_E2E) mounted successfully")
+                tprint(f"✅ Footage volume mounted successfully")
             else:
-                tprint(f"⚠️ Failed to mount footage volume (FTG_E2E)")
+                tprint(f"⚠️ Failed to mount footage volume")
             
             # Mount stills volume  
             if config.mount_volume("stills"):
-                tprint(f"✅ Stills volume (6 E2E) mounted successfully")
+                tprint(f"✅ Stills volume mounted successfully")
             else:
-                tprint(f"⚠️ Failed to mount stills volume (6 E2E)")
+                tprint(f"⚠️ Failed to mount stills volume")
                 
         except Exception as e:
             tprint(f"❌ Error during volume mounting: {e}")

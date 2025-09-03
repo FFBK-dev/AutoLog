@@ -40,7 +40,7 @@ This backend system provides API endpoints and automated processing workflows fo
 ```bash
 # Process all items with "0 - Pending File Info" status
 curl -X POST "http://localhost:8081/run/stills_autolog_00_run_all" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -51,7 +51,7 @@ curl -X POST "http://localhost:8081/run/stills_autolog_00_run_all" \
 ```bash
 # Process a single item
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -60,25 +60,25 @@ curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
 ```bash
 # JSON array format
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": ["S04871", "S04872", "S04873"]}'
 
 # Comma-separated string format
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871,S04872,S04873"}'
 
 # Line-separated string format
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871\nS04872\nS04873"}'
 
 # Space-separated string format
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871 S04872 S04873"}'
 ```
@@ -87,7 +87,7 @@ curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
 ```bash
 # Processes step 05 and automatically continues through steps 06, 07, 08 to completion
 curl -X POST "http://localhost:8081/run/stills_autolog_05_generate_description" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -112,19 +112,19 @@ The job monitor provides:
 **Get API Status**
 ```bash
 curl -X GET "http://localhost:8000/status" \
-  -H "x-api-key: supersecret"
+  -H "x-api-key: your_api_key"
 ```
 
 **Get Detailed Job Information**
 ```bash
 curl -X GET "http://localhost:8000/job/{job_id}" \
-  -H "x-api-key: supersecret"
+  -H "x-api-key: your_api_key"
 ```
 
 **List All Available Jobs**
 ```bash
 curl -X GET "http://localhost:8000/jobs" \
-  -H "x-api-key: supersecret"
+  -H "x-api-key: your_api_key"
 ```
 
 ### Metadata Bridge API (Avid Media Composer Integration)
@@ -135,7 +135,7 @@ The Metadata Bridge provides **bidirectional metadata synchronization** between 
 ```bash
 # Retrieve metadata from FileMaker Pro for use in Avid Media Composer
 curl -X POST "http://localhost:8000/metadata-bridge/query" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
     "media_type": "stills",
@@ -147,7 +147,7 @@ curl -X POST "http://localhost:8000/metadata-bridge/query" \
 ```bash
 # Send metadata from Avid Media Composer to update FileMaker Pro records
 curl -X POST "http://localhost:8000/metadata-bridge/export" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
     "media_type": "stills",
@@ -179,7 +179,7 @@ curl -X POST "http://localhost:8000/metadata-bridge/export" \
 ```bash
 # Upscale image using AI enhancement
 curl -X POST "http://localhost:8081/run/stills_upscale_image" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -188,7 +188,7 @@ curl -X POST "http://localhost:8081/run/stills_upscale_image" \
 ```bash
 # Rotate thumbnail 90 degrees clockwise
 curl -X POST "http://localhost:8081/run/stills_rotate_thumbnail" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -197,7 +197,7 @@ curl -X POST "http://localhost:8081/run/stills_rotate_thumbnail" \
 ```bash
 # Regenerate thumbnail from source image
 curl -X POST "http://localhost:8081/run/stills_refresh_thumbnail" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -207,7 +207,7 @@ curl -X POST "http://localhost:8081/run/stills_refresh_thumbnail" \
 #### Job Status and Statistics
 ```bash
 curl -X GET "http://localhost:8081/status" \
-  -H "x-api-key: supersecret"
+  -H "x-api-key: your_api_key"
 ```
 
 Returns:
@@ -808,11 +808,11 @@ Legacy scripts should be modernized with:
 Required environment variables:
 
 ```bash
-FILEMAKER_SERVER=10.0.222.144
-FILEMAKER_USERNAME=Background  
-FILEMAKER_PASSWORD=july1776
+FILEMAKER_SERVER=YOUR_SERVER_IP
+FILEMAKER_USERNAME=your_filemaker_username  
+FILEMAKER_PASSWORD=your_filemaker_password
 OPENAI_API_KEY=sk-proj-...
-FM_AUTOMATION_KEY=supersecret  # API authentication
+FM_AUTOMATION_KEY=your_api_key  # API authentication
 AUTOLOG_DEBUG=false           # Enable debug mode for real-time output
 ```
 
@@ -1035,7 +1035,7 @@ Capped between 10 minutes and 2 hours
 
 ```bash
 # API Configuration
-FM_AUTOMATION_KEY=supersecret  # API authentication key
+FM_AUTOMATION_KEY=your_api_key  # API authentication key
 AUTOLOG_DEBUG=false            # Enable debug mode for real-time output
 
 # FileMaker Configuration (in config.py)

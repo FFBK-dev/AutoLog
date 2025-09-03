@@ -97,7 +97,7 @@ def check_key(x_api_key: str = Header(None)):
         return None
     
     # If API key is provided, it must match
-    expected_key = os.getenv('FM_AUTOMATION_KEY', 'supersecret')
+    expected_key = os.getenv('FM_AUTOMATION_KEY', 'your_api_key_here')
     if x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
@@ -112,15 +112,15 @@ async def startup_event():
     try:
         # Mount footage volume
         if config.mount_volume("footage"):
-            logging.info("✅ Footage volume (FTG_E2E) mounted successfully")
+            logging.info("✅ Footage volume mounted successfully")
         else:
-            logging.warning("⚠️ Failed to mount footage volume (FTG_E2E)")
+            logging.warning("⚠️ Failed to mount footage volume")
         
         # Mount stills volume  
         if config.mount_volume("stills"):
-            logging.info("✅ Stills volume (6 E2E) mounted successfully")
+            logging.info("✅ Stills volume mounted successfully")
         else:
-            logging.warning("⚠️ Failed to mount stills volume (6 E2E)")
+            logging.warning("⚠️ Failed to mount stills volume")
             
     except Exception as e:
         logging.error(f"❌ Error during volume mounting: {e}")

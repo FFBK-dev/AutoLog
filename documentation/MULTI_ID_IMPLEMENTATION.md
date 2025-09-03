@@ -62,7 +62,7 @@ Converted an existing job script to demonstrate the new multi-ID capabilities:
 **Single ID:**
 ```bash
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871"}'
 ```
@@ -70,7 +70,7 @@ curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
 **Multiple IDs (JSON Array):**
 ```bash
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": ["S04871", "S04872", "S04873"]}'
 ```
@@ -78,7 +78,7 @@ curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
 **Multiple IDs (Comma-separated):**
 ```bash
 curl -X POST "http://localhost:8081/run/stills_autolog_01_get_file_info" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"stills_id": "S04871,S04872,S04873"}'
 ```

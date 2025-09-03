@@ -184,7 +184,7 @@ def retry_failed_item(footage_id, token):
         response = requests.post(
             "http://localhost:8081/run/footage_autolog_00_run_all",
             json=payload,
-            headers={"X-API-Key": "supersecret"},
+                            headers={"X-API-Key": "your_api_key_here"},
             timeout=30
         )
         

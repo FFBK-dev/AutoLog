@@ -158,7 +158,7 @@ def upload_thumbnail_to_filemaker(token, layout, record_id, field_name, file_pat
     try:
         # Construct upload URL
         # Format: /layouts/{layout}/records/{recordId}/containers/{fieldName}/{repetition}
-        upload_url = f"https://10.0.222.144/fmi/data/vLatest/databases/Emancipation%20to%20Exodus/layouts/{layout}/records/{record_id}/containers/{field_name}/1"
+        upload_url = config.url(f"layouts/{layout}/records/{record_id}/containers/{field_name}/1")
         
         # Prepare file for upload
         with open(file_path, 'rb') as f:

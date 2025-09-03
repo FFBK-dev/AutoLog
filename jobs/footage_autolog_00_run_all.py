@@ -2346,15 +2346,15 @@ if __name__ == "__main__":
         try:
             # Mount footage volume
             if config.mount_volume("footage"):
-                tprint(f"✅ Footage volume (FTG_E2E) mounted successfully")
+                tprint(f"✅ Footage volume mounted successfully")
             else:
-                tprint(f"⚠️ Failed to mount footage volume (FTG_E2E)")
+                tprint(f"⚠️ Failed to mount footage volume")
             
             # Mount stills volume  
             if config.mount_volume("stills"):
-                tprint(f"✅ Stills volume (6 E2E) mounted successfully")
+                tprint(f"✅ Stills volume mounted successfully")
             else:
-                tprint(f"⚠️ Failed to mount stills volume (6 E2E)")
+                tprint(f"⚠️ Failed to mount stills volume")
                 
         except Exception as e:
             tprint(f"❌ Error during volume mounting: {e}")

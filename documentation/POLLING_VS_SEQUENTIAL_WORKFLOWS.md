@@ -76,7 +76,7 @@ For step 6 (description generation):
 ```bash
 # Run via API (runs for 1 hour by default)
 curl -X POST "http://localhost:8081/run/footage_autolog" \
-  -H "x-api-key: supersecret" \
+  -H "x-api-key: your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"args": []}'
 
@@ -241,7 +241,7 @@ The polling system provides detailed progress logging:
 
 ```bash
 # Check current system status
-curl -X GET "http://localhost:8081/status" -H "x-api-key: supersecret"
+curl -X GET "http://localhost:8081/status" -H "x-api-key: your_api_key"
 
 # Monitor job progress
 tail -f /path/to/api/logs

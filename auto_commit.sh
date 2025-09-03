@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Navigate to your repository
-cd /Users/admin/Documents/Github/Filemaker-Backend
+cd /path/to/your/project
 
 # Add all changes
 git add .
