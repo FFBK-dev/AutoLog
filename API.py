@@ -372,7 +372,7 @@ def load_openai_for_status():
         return {"error": f"Failed to load OpenAI status: {str(e)}"}
 
 # Existing job execution endpoints (unchanged)
-@app.post("/run/{job}", dependencies=[Depends(check_key)])
+@app.post("/run/{job}")
 def run_job(job: str, background_tasks: BackgroundTasks, payload: dict = Body({})):
     """Execute a job with tracking and background processing."""
     
@@ -518,7 +518,7 @@ def list_jobs():
     
     return {"jobs": sorted(jobs)}
 
-@app.get("/job/{job_id}", dependencies=[Depends(check_key)])
+@app.get("/job/{job_id}")
 def get_job_status(job_id: str):
     """Get the status and details of a specific job."""
     job_info = job_tracker.get_job_status(job_id)
@@ -628,7 +628,7 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
 
 # Metadata Bridge Endpoints for Avid Media Composer Integration
 
-@app.post("/metadata-bridge/query", dependencies=[Depends(check_key)])
+@app.post("/metadata-bridge/query")
 def metadata_bridge_query(request: Request, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for FileMaker Pro → Avid Media Composer (metadata-to-avid)
@@ -699,7 +699,7 @@ def metadata_bridge_query(request: Request, payload: dict = Body(...)):
         logging.error(f"❌ Error type: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/metadata-bridge/export", dependencies=[Depends(check_key)])
+@app.post("/metadata-bridge/export")
 def metadata_bridge_export(request: Request, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for Avid Media Composer → FileMaker Pro (metadata-from-avid)
@@ -788,7 +788,7 @@ def health_check():
         "openai_key_count": openai_key_count
     }
 
-@app.get("/sessions", dependencies=[Depends(check_key)])
+@app.get("/sessions")
 def get_session_status():
     """Get current FileMaker session information."""
     try:
@@ -804,7 +804,7 @@ def get_session_status():
         logging.error(f"❌ Error getting session status: {e}")
         raise HTTPException(status_code=500, detail=f"Session status error: {str(e)}")
 
-@app.post("/sessions/cleanup", dependencies=[Depends(check_key)])
+@app.post("/sessions/cleanup")
 def cleanup_sessions():
     """Force cleanup of all FileMaker sessions."""
     try:

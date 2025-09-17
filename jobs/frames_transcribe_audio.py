@@ -3,6 +3,7 @@ import sys, os, subprocess, time
 import warnings
 from pathlib import Path
 import requests
+import re
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -39,6 +40,130 @@ def get_whisper_model():
         print("  -> Loading Whisper model...")
         whisper_model = whisper.load_model("base")
     return whisper_model
+
+def validate_transcript_quality(transcript, max_length=500, max_repetition_ratio=4.0):
+    """
+    Validate transcript quality to detect problematic transcriptions.
+    
+    Args:
+        transcript: The transcript text to validate
+        max_length: Maximum reasonable length for a 5-second audio clip
+        max_repetition_ratio: Maximum allowed ratio of total words to unique words
+    
+    Returns:
+        tuple: (is_valid, issues_list)
+    """
+    if not transcript or len(transcript.strip()) == 0:
+        return True, []  # Empty transcript is fine (silent audio)
+    
+    issues = []
+    transcript = transcript.strip()
+    
+    # Check 1: Excessive length for 5-second audio
+    if len(transcript) > max_length:
+        issues.append(f"unusually long ({len(transcript)} chars for 5sec audio)")
+    
+    # Check 2: High repetition ratio
+    words = transcript.split()
+    if len(words) > 10:
+        unique_words = set(words)
+        repetition_ratio = len(words) / len(unique_words)
+        if repetition_ratio > max_repetition_ratio:
+            issues.append(f"high word repetition ratio ({repetition_ratio:.1f})")
+    
+    # Check 3: Specific problematic patterns
+    problematic_patterns = [
+        "I'm going to get you a little bit more",
+        "I'm going to be a little bit more patient",
+        "a little bit of a"
+    ]
+    
+    for pattern in problematic_patterns:
+        if pattern in transcript:
+            count = transcript.count(pattern)
+            if count > 1:
+                issues.append(f"'{pattern}' repeated {count} times")
+    
+    # Check 4: Excessive repetition of any phrase
+    if len(words) > 15:
+        # Look for any 3+ word phrases that repeat excessively
+        for phrase_len in range(3, min(8, len(words) // 3)):
+            for start in range(len(words) - phrase_len):
+                phrase = ' '.join(words[start:start + phrase_len])
+                if len(phrase) > 15:  # Only check meaningful phrases
+                    count = transcript.count(phrase)
+                    if count >= 3:  # Any phrase repeated 3+ times is suspicious
+                        issues.append(f"phrase '{phrase[:30]}...' repeated {count} times")
+                        break
+            if issues:  # Stop checking if we found issues
+                break
+    
+    # Check 5: Identical consecutive sentences
+    sentences = re.split(r'[.!?]+', transcript)
+    for i in range(len(sentences) - 1):
+        sentence1 = sentences[i].strip().lower()
+        sentence2 = sentences[i + 1].strip().lower()
+        if sentence1 and sentence2 and sentence1 == sentence2 and len(sentence1) > 10:
+            issues.append(f"identical consecutive sentences")
+            break
+    
+    is_valid = len(issues) == 0
+    return is_valid, issues
+
+def clean_problematic_transcript(transcript):
+    """
+    Clean up a problematic transcript by removing excessive repetitions.
+    This is used as a last resort to salvage partially useful transcripts.
+    """
+    if not transcript:
+        return transcript
+    
+    original_length = len(transcript)
+    
+    # Remove excessive repetitions of known problematic patterns
+    problematic_patterns = [
+        "I'm going to get you a little bit more",
+        "I'm going to be a little bit more patient"
+    ]
+    
+    for pattern in problematic_patterns:
+        if pattern in transcript:
+            count = transcript.count(pattern)
+            if count > 1:
+                # Keep only the first occurrence
+                parts = transcript.split(pattern, 1)
+                if len(parts) == 2:
+                    transcript = parts[0] + pattern + parts[1].replace(pattern, "")
+    
+    # Clean up "a little bit of a" excessive repetitions
+    pattern = "a little bit of a"
+    if transcript.count(pattern) > 3:
+        words = transcript.split()
+        cleaned_words = []
+        pattern_words = pattern.split()
+        
+        i = 0
+        pattern_count = 0
+        
+        while i < len(words):
+            if i <= len(words) - len(pattern_words) and words[i:i+len(pattern_words)] == pattern_words:
+                pattern_count += 1
+                if pattern_count <= 2:  # Keep first 2 occurrences
+                    cleaned_words.extend(pattern_words)
+                i += len(pattern_words)
+            else:
+                cleaned_words.append(words[i])
+                i += 1
+        
+        transcript = ' '.join(cleaned_words)
+    
+    # Final cleanup
+    transcript = re.sub(r'\s+', ' ', transcript).strip()
+    
+    if len(transcript) != original_length:
+        print(f"  -> Cleaned transcript: {original_length} -> {len(transcript)} chars")
+    
+    return transcript
 
 def get_frame_record(token, frame_id):
     """Get frame record by FRAMES_ID."""
@@ -185,7 +310,7 @@ def check_audio_silence(audio_path):
     return False
 
 def transcribe_audio(audio_path):
-    """Transcribe audio using Whisper."""
+    """Transcribe audio using Whisper with quality validation."""
     try:
         model = get_whisper_model()
         
@@ -198,7 +323,32 @@ def transcribe_audio(audio_path):
         result = model.transcribe(audio_path, language="en")
         transcript = result.get("text", "").strip()
         
-        print(f"  -> Transcribed: '{transcript[:50]}{'...' if len(transcript) > 50 else ''}'")
+        print(f"  -> Raw transcribed: '{transcript[:50]}{'...' if len(transcript) > 50 else ''}'")
+        
+        # Validate transcript quality
+        is_valid, issues = validate_transcript_quality(transcript)
+        
+        if not is_valid:
+            print(f"  -> ⚠️ Transcript quality issues detected: {', '.join(issues)}")
+            
+            # Try to clean the transcript
+            cleaned_transcript = clean_problematic_transcript(transcript)
+            
+            # Re-validate cleaned transcript
+            is_cleaned_valid, cleaned_issues = validate_transcript_quality(cleaned_transcript)
+            
+            if is_cleaned_valid:
+                print(f"  -> ✅ Cleaned transcript is acceptable")
+                transcript = cleaned_transcript
+            else:
+                print(f"  -> ❌ Even cleaned transcript has issues: {', '.join(cleaned_issues)}")
+                print(f"  -> Rejecting transcript and marking as problematic")
+                # Return empty transcript and log the issue
+                transcript = ""
+        
+        if transcript:
+            print(f"  -> Final transcript: '{transcript[:50]}{'...' if len(transcript) > 50 else ''}'")
+        
         return transcript
         
     except Exception as e:
@@ -251,7 +401,7 @@ if __name__ == "__main__":
             print(f"  -> Video has no audio or is silent")
             transcript = ""
         elif audio_path:
-            # Transcribe audio
+            # Transcribe audio with quality validation
             transcript = transcribe_audio(audio_path)
             
             # Clean up temp file
