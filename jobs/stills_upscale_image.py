@@ -262,11 +262,17 @@ if __name__ == "__main__":
             # Update file specifications to reflect the upscaled image
             new_dimensions = f"{img.width}x{img.height}"
             new_file_size_mb = f"{os.path.getsize(server_path) / (1024*1024):.2f} Mb"
-            file_extension = Path(server_path).suffix.lower()
-            file_format = file_extension.lstrip('.').upper() if file_extension else "JPEG"
+            
+            # Get the original file format from the FileMaker record (set by step 01)
+            # instead of deriving it from server path (which is always .jpg)
+            original_file_format = record_data.get(FIELD_MAPPING["file_format"], "UNKNOWN")
+            
+            # Remove any existing upscaled notation to avoid double notation
+            if original_file_format.endswith(" (upscaled)"):
+                original_file_format = original_file_format.replace(" (upscaled)", "")
             
             # Add (upscaled) notation since this is an upscaling script
-            file_format += " (upscaled)"
+            file_format = original_file_format + " (upscaled)"
             
             print(f"  -> Updated dimensions: {new_dimensions}")
             print(f"  -> Updated file size: {new_file_size_mb}")

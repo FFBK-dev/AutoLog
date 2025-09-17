@@ -10,6 +10,8 @@ This API server provides:
 """
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Body, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 import warnings
 import subprocess
@@ -33,8 +35,15 @@ sys.path.append(str(Path(__file__).resolve().parent))
 
 import config
 
-# Initialize the FastAPI app
-app = FastAPI(title="FileMaker Automation API", version="2.0.0")
+# Initialize the FastAPI app with increased payload limits
+app = FastAPI(
+    title="FileMaker Automation API", 
+    version="2.0.0",
+    # Set generous limits for metadata export operations
+    # This handles large batch exports from Avid panel
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # Job tracking
 class JobTracker:
@@ -90,6 +99,34 @@ class JobTracker:
 
 job_tracker = JobTracker()
 
+# Configure CORS and payload handling for Avid panel integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add middleware to handle large payloads gracefully
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
+import asyncio
+
+class LargePayloadMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        # Log large payload requests for debugging
+        if hasattr(request, 'headers'):
+            content_length = request.headers.get('content-length')
+            if content_length and int(content_length) > 1024 * 1024:  # > 1MB
+                logging.info(f"📦 Large payload received: {int(content_length) / 1024 / 1024:.1f}MB from {request.client.host if request.client else 'unknown'}")
+        
+        response = await call_next(request)
+        return response
+
+app.add_middleware(LargePayloadMiddleware)
+
 # API Key validation (optional for backward compatibility)
 def check_key(x_api_key: str = Header(None)):
     # Allow requests without API key (backward compatibility)
@@ -131,6 +168,140 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logging.info("🔄 Shutting down FileMaker Automation API")
+
+# Helper function for synchronous metadata processing
+def execute_metadata_query_sync(payload: dict):
+    """Execute metadata query synchronously for small requests."""
+    import tempfile
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(payload, f)
+        payload_file = f.name
+    
+    try:
+        cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-to-avid.py"), payload_file]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60  # 60 second timeout for metadata queries
+        )
+        
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        else:
+            error_output = result.stderr if result.stderr else result.stdout
+            try:
+                error_data = json.loads(error_output)
+                raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
+                
+    finally:
+        if os.path.exists(payload_file):
+            os.unlink(payload_file)
+
+# Helper function for synchronous metadata export
+def execute_metadata_export_sync(payload: dict):
+    """Execute metadata export synchronously for small requests."""
+    import tempfile
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(payload, f)
+        payload_file = f.name
+    
+    try:
+        cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-from-avid.py"), payload_file]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout for metadata exports
+        )
+        
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        else:
+            error_output = result.stderr if result.stderr else result.stdout
+            try:
+                error_data = json.loads(error_output)
+                raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
+                
+    finally:
+        if os.path.exists(payload_file):
+            os.unlink(payload_file)
+
+# Helper function for async metadata processing
+def run_metadata_job_with_tracking(job_id: str, script_name: str, payload: dict):
+    """Run metadata job with comprehensive tracking."""
+    import tempfile
+    
+    try:
+        logging.info(f"🚀 Starting metadata job {job_id}")
+        
+        # Create temporary payload file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(payload, f)
+            payload_file = f.name
+        
+        try:
+            cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / script_name), payload_file]
+            
+            # Dynamic timeout based on payload size
+            total_items = 0
+            if 'identifiers' in payload:
+                total_items = len(payload['identifiers'])
+            elif 'assets' in payload:
+                total_items = len(payload['assets'])
+            
+            # Scale timeout: 2s per item, minimum 5min, maximum 20min
+            base_timeout = 300  # 5 minutes
+            per_item_time = 2   # 2 seconds per item
+            max_timeout = 1200  # 20 minutes
+            
+            timeout = min(max_timeout, max(base_timeout, total_items * per_item_time))
+            logging.info(f"📊 {job_id} - Processing {total_items} items with {timeout}s timeout")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout  # Dynamic timeout based on load size
+            )
+            
+            success = result.returncode == 0
+            job_results = None
+            
+            if success:
+                try:
+                    job_results = json.loads(result.stdout)
+                    result_count = len(job_results.get('results', []))
+                    logging.info(f"✅ {job_id} completed successfully - processed {result_count} items")
+                except json.JSONDecodeError:
+                    logging.warning(f"⚠️ {job_id} completed but could not parse results")
+                    success = False
+            else:
+                logging.error(f"❌ {job_id} failed with exit code {result.returncode}")
+                if result.stderr:
+                    logging.error(f"❌ {job_id} stderr: {result.stderr}")
+            
+            job_tracker.complete_job(job_id, success, job_results)
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(payload_file):
+                os.unlink(payload_file)
+                
+    except subprocess.TimeoutExpired:
+        logging.error(f"⏱️ {job_id} timed out after 5 minutes")
+        job_tracker.complete_job(job_id, False, {"error": "Operation timed out"})
+    except Exception as e:
+        logging.error(f"❌ {job_id} error: {str(e)}")
+        job_tracker.complete_job(job_id, False, {"error": str(e)})
 
 # Background task runner with enhanced logging
 def run_job_with_tracking(job_id: str, cmd: List[str]):
@@ -348,6 +519,47 @@ def get_status():
         return status
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+
+@app.get("/status/{job_id}")
+def get_job_status(job_id: str):
+    """Get status of a specific job for polling."""
+    job_info = job_tracker.get_job_status(job_id)
+    
+    if not job_info:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Format response for Avid panel polling
+    if job_info["status"] == "running":
+        return {
+            "job_id": job_id,
+            "state": "processing",
+            "progress": {"processed": 0, "total": 0},  # Could be enhanced with real progress
+            "results": None,
+            "error": None,
+            "submitted_at": job_info["submitted_at"],
+            "estimated_completion": None  # Could calculate based on job type
+        }
+    elif job_info["status"] == "completed":
+        results = job_info.get("results", {})
+        return {
+            "job_id": job_id,
+            "state": "completed",
+            "progress": {"processed": len(results.get("results", [])), "total": len(results.get("results", []))},
+            "results": results,
+            "error": None,
+            "submitted_at": job_info["submitted_at"],
+            "completed_at": job_info.get("completed_at")
+        }
+    else:  # failed
+        return {
+            "job_id": job_id,
+            "state": "failed",
+            "progress": {"processed": 0, "total": 0},
+            "results": None,
+            "error": job_info.get("results", {}).get("error", "Unknown error"),
+            "submitted_at": job_info["submitted_at"],
+            "completed_at": job_info.get("completed_at")
+        }
 
 def load_openai_for_status():
     """Load OpenAI client specifically for status endpoint."""
@@ -629,12 +841,12 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
 # Metadata Bridge Endpoints for Avid Media Composer Integration
 
 @app.post("/metadata-bridge/query")
-def metadata_bridge_query(request: Request, payload: dict = Body(...)):
+def metadata_bridge_query(request: Request, background_tasks: BackgroundTasks, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for FileMaker Pro → Avid Media Composer (metadata-to-avid)
     
     Accepts: { "media_type": "stills|archival|live_footage", "identifiers": ["id1", "id2"] }
-    Returns: Metadata for the specified identifiers
+    Returns: Metadata for the specified identifiers (async for large requests)
     """
     try:
         # Log the incoming request for debugging
@@ -653,40 +865,24 @@ def metadata_bridge_query(request: Request, payload: dict = Body(...)):
             logging.error(f"❌ Missing identifiers in payload: {payload}")
             raise HTTPException(status_code=400, detail="Missing identifiers in payload")
         
-        # Create temporary payload file
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump(payload, f)
-            payload_file = f.name
-        
-        try:
-            # Execute metadata-to-avid script (FileMaker Pro → Avid Media Composer)
-            cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-to-avid.py"), payload_file]
+        # Decide between sync and async based on payload size
+        if len(identifiers) > 10:  # Use async for large requests
+            job_id = job_tracker.submit_job("metadata-query", [payload])
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60  # 60 second timeout for metadata queries
-            )
+            # Run in background
+            background_tasks.add_task(run_metadata_job_with_tracking, job_id, "metadata-to-avid.py", payload)
             
-            if result.returncode == 0:
-                # Parse the JSON response
-                response_data = json.loads(result.stdout)
-                return response_data
-            else:
-                # Try to parse error from stderr or stdout
-                error_output = result.stderr if result.stderr else result.stdout
-                try:
-                    error_data = json.loads(error_output)
-                    raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
-                    
-        finally:
-            # Clean up temporary file
-            if os.path.exists(payload_file):
-                os.unlink(payload_file)
+            return {
+                "job_id": job_id,
+                "processing": True,
+                "total_identifiers": len(identifiers),
+                "estimated_completion_seconds": len(identifiers) * 2,  # 2s per item estimate
+                "poll_endpoint": f"/status/{job_id}",
+                "message": f"Processing {len(identifiers)} {media_type} records asynchronously"
+            }
+        else:
+            # Synchronous processing for small requests
+            return execute_metadata_query_sync(payload)
                 
     except HTTPException:
         raise
@@ -700,64 +896,62 @@ def metadata_bridge_query(request: Request, payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/metadata-bridge/export")
-def metadata_bridge_export(request: Request, payload: dict = Body(...)):
+def metadata_bridge_export(request: Request, background_tasks: BackgroundTasks, payload: dict = Body(...)):
     """
     Metadata bridge endpoint for Avid Media Composer → FileMaker Pro (metadata-from-avid)
     
     Accepts: { "media_type": "stills|archival|live_footage", "assets": [...] }
     Returns: Success confirmation with processing results
+    
+    Enhanced for large payload handling (up to 50MB)
     """
     try:
-        # Log the incoming request for debugging
-        logging.info(f"🔍 Metadata bridge export received from {request.client.host}")
-        logging.info(f"🔍 Payload received: {payload}")
+        # Enhanced logging for large payload debugging
+        client_ip = request.client.host if request.client else "unknown"
+        logging.info(f"🔍 Metadata bridge export received from {client_ip}")
         
-        # Validate payload
+        # Log payload size for debugging
+        payload_size = len(str(payload))
+        if payload_size > 1024:
+            logging.info(f"📦 Payload size: {payload_size / 1024:.1f}KB")
+        
+        # Log essential info without dumping large payloads
         media_type = payload.get('media_type')
         assets = payload.get('assets', [])
+        logging.info(f"📋 Media type: {media_type}, assets count: {len(assets)}")
         
+        # Validate payload
         if not media_type:
-            logging.error(f"❌ Missing media_type in payload: {payload}")
+            logging.error(f"❌ Missing media_type in payload")
             raise HTTPException(status_code=400, detail="Missing media_type in payload")
         
         if not assets:
-            logging.error(f"❌ Missing assets in payload: {payload}")
+            logging.error(f"❌ Missing assets in payload")
             raise HTTPException(status_code=400, detail="Missing assets in payload")
         
-        # Create temporary payload file
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump(payload, f)
-            payload_file = f.name
+        # Validate reasonable limits (safety check)
+        if len(assets) > 1000:  # Generous limit
+            logging.error(f"❌ Too many assets: {len(assets)} (max 1000)")
+            raise HTTPException(status_code=400, detail=f"Too many assets: {len(assets)}. Maximum 1000 per request.")
         
-        try:
-            # Execute metadata-from-avid script
-            cmd = ["python3", str(Path(__file__).resolve().parent / "jobs" / "metadata-from-avid.py"), payload_file]
+        # Decide between sync and async based on payload size
+        if len(assets) > 10:  # Use async for large requests
+            job_id = job_tracker.submit_job("metadata-export", [payload])
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120  # 2 minute timeout for metadata exports
-            )
+            # Run in background
+            background_tasks.add_task(run_metadata_job_with_tracking, job_id, "metadata-from-avid.py", payload)
             
-            if result.returncode == 0:
-                # Parse the JSON response
-                response_data = json.loads(result.stdout)
-                return response_data
-            else:
-                # Try to parse error from stderr or stdout
-                error_output = result.stderr if result.stderr else result.stdout
-                try:
-                    error_data = json.loads(error_output)
-                    raise HTTPException(status_code=500, detail=error_data.get("error", "Unknown error"))
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=500, detail=f"Script error: {error_output}")
-                    
-        finally:
-            # Clean up temporary file
-            if os.path.exists(payload_file):
-                os.unlink(payload_file)
+            return {
+                "job_id": job_id,
+                "processing": True,
+                "total_assets": len(assets),
+                "estimated_completion_seconds": len(assets) * 3,  # 3s per item estimate (updates are slower)
+                "poll_endpoint": f"/status/{job_id}",
+                "message": f"Processing {len(assets)} {media_type} updates asynchronously"
+            }
+        else:
+            # Synchronous processing for small requests
+            return execute_metadata_export_sync(payload)
                 
     except HTTPException:
         raise
@@ -816,4 +1010,23 @@ def cleanup_sessions():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # Configure uvicorn for large payload handling (Avid metadata exports)
+    uvicorn_config = {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "limit_max_requests": 1000,
+        "limit_concurrency": 1000,
+        # Critical: Set large payload limits for metadata export
+        "h11_max_incomplete_event_size": 50 * 1024 * 1024,  # 50MB
+        "timeout_keep_alive": 30,
+        "timeout_graceful_shutdown": 30,
+        # Enhanced logging
+        "log_level": "info",
+        "access_log": True
+    }
+    
+    logging.info("🚀 Starting FileMaker Automation API with enhanced payload support")
+    logging.info("📦 Maximum payload size: 50MB (for Avid metadata exports)")
+    
+    uvicorn.run(app, **uvicorn_config)

@@ -272,9 +272,19 @@ if __name__ == "__main__":
                 original_width, original_height = 1920, 1080  # Default fallback
                 img = Image.new('RGB', (original_width, original_height), (255, 255, 255))
         
-        # Process the image
-        if img.mode not in ('RGB', 'L'):
+        # Process the image - handle 16-bit TIF files properly
+        if img.mode == 'I;16':
+            print(f"  -> Detected 16-bit grayscale image, applying proper conversion")
+            # Use numpy for proper 16-bit to 8-bit conversion
+            import numpy as np
+            img_array = np.array(img)
+            # Scale from 16-bit range (0-65535) to 8-bit range (0-255)
+            img_8bit = (img_array / 256).astype(np.uint8)
+            # Convert back to PIL Image in L mode, then to RGB
+            img = Image.fromarray(img_8bit, mode='L').convert('RGB')
+        elif img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
+        
         if max(img.size) > AVID_MAX_DIMENSION:
             img.thumbnail((AVID_MAX_DIMENSION, AVID_MAX_DIMENSION), Image.Resampling.LANCZOS)
         
@@ -318,12 +328,15 @@ if __name__ == "__main__":
                 print(f"  -> Warning: Could not upload placeholder thumbnail: {thumb_error}")
 
         # Prepare payload with server path and file format
-        file_extension = Path(destination_path).suffix.lower()
-        file_format = file_extension.lstrip('.').upper() if file_extension else "JPEG"
+        # Get the original file format from the FileMaker record (set by step 01)
+        # instead of deriving it from destination path (which is always .jpg)
+        original_file_format = record_data.get(FIELD_MAPPING["file_format"], "UNKNOWN")
         
         # Add (upscaled) notation if the image was upscaled
         if was_upscaled:
-            file_format += " (upscaled)"
+            file_format = original_file_format + " (upscaled)"
+        else:
+            file_format = original_file_format
         
         payload = {
             FIELD_MAPPING["server_path"]: destination_path,
