@@ -288,7 +288,7 @@ def generate_caption(footage_data, thumb_path, token):
         
         # Call OpenAI API using global client
         response = client.chat_completions_create(
-            model="gpt-4o",
+                            model="gpt-5-mini",
             messages=messages,
             estimated_tokens=1000  # Conservative estimate for caption generation
         )

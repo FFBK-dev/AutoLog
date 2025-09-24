@@ -84,7 +84,7 @@ def handle_openai_with_graceful_retry(client, messages, stills_id, max_retries=5
             print(f"🔄 OpenAI API call attempt {attempt + 1}/{max_retries} for {stills_id}")
             
             response = client.chat_completions_create(
-                model="gpt-4o",
+                model="gpt-5-mini",
                 messages=messages,
                 response_format={"type": "json_object"},
                 estimated_tokens=2500  # Restored from 2000 to 2500 for better accuracy

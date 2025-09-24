@@ -760,7 +760,7 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
     # Build command for polling workflow
     cmd = [
         "python3", 
-        str(Path(__file__).resolve().parent / "jobs" / "footage_autolog.py")
+        str(Path(__file__).resolve().parent / "jobs" / "footage_autolog_00_run_all.py")
     ]
     
     # Set environment variables for polling parameters

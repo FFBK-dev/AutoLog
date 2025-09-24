@@ -2,7 +2,7 @@
 
 This document explains the difference between our two footage processing approaches and when to use each.
 
-## 🔄 Polling-Based Workflow (`footage_autolog.py`)
+## 🔄 Polling-Based Workflow (`footage_autolog_00_run_all.py`)
 
 ### How It Works
 The polling system continuously checks for records at each status and advances them independently:
@@ -81,7 +81,7 @@ curl -X POST "http://localhost:8081/run/footage_autolog" \
   -d '{"args": []}'
 
 # Run directly with custom duration
-POLL_DURATION=7200 POLL_INTERVAL=45 python3 footage_autolog.py
+POLL_DURATION=7200 POLL_INTERVAL=45 python3 footage_autolog_00_run_all.py
 ```
 
 ---

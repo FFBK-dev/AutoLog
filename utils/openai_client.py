@@ -204,6 +204,18 @@ class GlobalOpenAIClient:
                         continue  # Try again with new key
                     except ValueError:
                         pass  # No keys available, use normal retry logic
+                        
+            except openai.AuthenticationError as e:
+                print(f"🚫 Authentication error on Key #{self.current_key_index+1} (invalid/archived key)")
+                
+                # Try to switch to another key immediately
+                with self.lock:
+                    try:
+                        selected_key = self._get_next_available_key(estimated_tokens)
+                        print(f"🔄 Switched to Key #{self.current_key_index+1} for retry")
+                        continue  # Try again with new key
+                    except ValueError:
+                        pass  # No keys available, use normal retry logic
                 
                 if attempt < max_retries - 1:
                     # Extract wait time from error message if available

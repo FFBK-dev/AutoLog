@@ -359,7 +359,7 @@ def generate_video_description(client, frames_data, footage_data, prompts):
         # Make OpenAI API call
         print(f"  -> Calling OpenAI API for description generation...")
         response = client.chat_completions_create(
-            model="gpt-4o",
+            model="gpt-5-mini",
             messages=[
                 {"role": "system", "content": prompt_text}
             ]
