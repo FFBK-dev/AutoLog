@@ -26,6 +26,67 @@ FIELD_MAPPING = {
 def safe_get(metadata_dict, key, default=''):
     return metadata_dict.get(key, default)
 
+def extract_comprehensive_description(metadata):
+    """Extract description from multiple IPTC/EXIF fields and combine intelligently."""
+    # Description fields in nested structure (group, field) with priority order
+    description_fields = [
+        ('IPTC', 'Caption-Abstract'),        # Primary IPTC description field
+        ('IPTC', 'Headline'),                # IPTC headline  
+        ('XMP-dc', 'Description'),           # Dublin Core description
+        ('XMP-iptcCore', 'Caption'),         # XMP IPTC caption
+        ('EXIF', 'ImageDescription'),        # EXIF image description
+        ('IPTC', 'ObjectName'),              # IPTC object name
+        ('XMP-dc', 'Title'),                 # Dublin Core title
+        ('IPTC', 'SpecialInstructions'),     # IPTC special instructions
+        ('XMP-iptcCore', 'Headline'),        # XMP IPTC headline
+        ('XMP-photoshop', 'Headline'),       # Photoshop headline
+        ('XMP-photoshop', 'Instructions')   # Photoshop instructions
+    ]
+    
+    descriptions = []
+    found_fields = []
+    
+    # Extract all available description fields from nested structure
+    for group, field in description_fields:
+        group_data = metadata.get(group, {})
+        if isinstance(group_data, dict):
+            value = group_data.get(field, '')
+            if value and str(value).strip():
+                # Clean up the value and convert to string if needed
+                cleaned_value = str(value).strip()
+                # Only add if it's not a duplicate and has meaningful content
+                if cleaned_value and cleaned_value not in descriptions and len(cleaned_value) > 3:
+                    descriptions.append(cleaned_value)
+                    found_fields.append(f"{group}:{field}")
+    
+    if not descriptions:
+        print(f"  -> No description found in any IPTC/EXIF fields")
+        return ""
+    
+    print(f"  -> Found description fields: {', '.join(found_fields)}")
+    
+    # If we have multiple descriptions, combine them intelligently
+    if len(descriptions) == 1:
+        final_description = descriptions[0]
+        print(f"  -> Found single description from IPTC/EXIF: {final_description[:100]}...")
+    else:
+        # Combine multiple descriptions, with the primary one first
+        final_description = descriptions[0]
+        
+        # Add additional descriptions that aren't just duplicates or substrings
+        additional_info = []
+        for desc in descriptions[1:]:
+            # Only add if it's not a substring of the main description and adds value
+            if desc.lower() not in final_description.lower() and final_description.lower() not in desc.lower():
+                additional_info.append(desc)
+        
+        if additional_info:
+            final_description += " | " + " | ".join(additional_info)
+        
+        print(f"  -> Combined {len(descriptions)} description fields from IPTC/EXIF: {final_description[:100]}...")
+    
+    return final_description
+
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
     stills_id = sys.argv[1]
@@ -71,7 +132,7 @@ if __name__ == "__main__":
         metadata = json.loads(result.stdout)[0]
         print(f"DEBUG: Parsed metadata with {len(metadata)} keys")
         
-        description = safe_get(metadata, 'IPTC:Caption-Abstract')
+        description = extract_comprehensive_description(metadata)
         copyright_notice = safe_get(metadata, 'IPTC:CopyrightNotice')
         byline = safe_get(metadata, 'IPTC:By-line')
         exif_url = safe_get(metadata, 'XMP-iptcCore:CreatorAddress')
@@ -83,7 +144,7 @@ if __name__ == "__main__":
         filename = Path(import_path).stem
         archival_id = filename.replace("GettyImages-", "")
 
-        print(f"DEBUG: Extracted description: {description[:100] if description else 'None'}...")
+        print(f"DEBUG: Enhanced description extraction complete: {description[:100] if description else 'None'}...")
         print(f"DEBUG: Extracted copyright: {copyright_final[:100] if copyright_final else 'None'}...")
         print(f"DEBUG: Extracted archival_id: {archival_id}")
         print(f"DEBUG: Extracted date: {date_created}")
