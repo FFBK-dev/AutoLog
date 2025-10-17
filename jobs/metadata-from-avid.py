@@ -415,7 +415,7 @@ def update_footage_metadata(assets, token, layout_name):
             # Update record if we have data to update
             if field_data:
                 # Set status to trigger embedding regeneration since metadata changed
-                field_data[FOOTAGE_FIELD_MAPPING["autolog_status"]] = "7 - Generating Embeddings"
+                field_data[FOOTAGE_FIELD_MAPPING["autolog_status"]] = "8 - Generating Embeddings"
                 
                 payload = {"fieldData": field_data}
                 

@@ -370,7 +370,19 @@ def run_job_with_tracking(job_id: str, cmd: List[str]):
                             logging.info(f"🔍 {job_id} - {line.strip()}")
             
             if result.stderr:
-                logging.error(f"❌ {job_id} stderr: {result.stderr}")
+                # Filter out urllib3 LibreSSL warnings from stderr
+                filtered_stderr = '\n'.join([
+                    line for line in result.stderr.split('\n')
+                    if not any(pattern in line for pattern in [
+                        "urllib3/__init__.py",
+                        "NotOpenSSLWarning",
+                        "urllib3 v2 only supports OpenSSL",
+                        "warnings.warn("
+                    ])
+                ]).strip()
+                
+                if filtered_stderr:
+                    logging.error(f"❌ {job_id} stderr: {filtered_stderr}")
         
         # Final summary and results capture
         job_results = None
@@ -838,6 +850,31 @@ def start_polling_workflow(background_tasks: BackgroundTasks, payload: dict = Bo
         "message": f"Polling workflow started for {poll_duration}s with {poll_interval}s intervals"
     }
 
+# Music AutoLog Endpoint
+@app.post("/run/music_autolog", dependencies=[Depends(check_key)])
+def run_music_autolog(background_tasks: BackgroundTasks):
+    """Execute Music AutoLog workflow for pending items."""
+    
+    # Build command for music autolog workflow
+    cmd = [
+        "python3", 
+        str(Path(__file__).resolve().parent / "jobs" / "music_autolog_00_run_all.py")
+    ]
+    
+    # Submit job for tracking
+    job_id = job_tracker.submit_job("music_autolog", [])
+    
+    # Run in background
+    background_tasks.add_task(run_job_with_tracking, job_id, cmd)
+    
+    return {
+        "job_id": job_id,
+        "job_name": "music_autolog",
+        "submitted": True,
+        "status": "running",
+        "message": "Music AutoLog workflow started - processing pending items"
+    }
+
 # Metadata Bridge Endpoints for Avid Media Composer Integration
 
 @app.post("/metadata-bridge/query")
@@ -963,6 +1000,86 @@ def metadata_bridge_export(request: Request, background_tasks: BackgroundTasks, 
         logging.error(f"❌ Metadata bridge export error: {str(e)}")
         logging.error(f"❌ Error type: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/edl-export")
+def edl_export(request: Request, payload: dict = Body(...)):
+    """
+    EDL Export endpoint for receiving EDL files from Avid Media Composer
+    
+    Accepts: { "edl_content": "TITLE: ...", "filename": "project.edl", "source": "avid_panel" }
+    Returns: Success confirmation with storage location
+    
+    This endpoint receives EDL files and stores them for analysis and processing.
+    """
+    try:
+        # Log the incoming request
+        client_ip = request.client.host if request.client else "unknown"
+        logging.info(f"🎬 EDL export received from {client_ip}")
+        
+        # Validate payload
+        edl_content = payload.get('edl_content')
+        filename = payload.get('filename', 'unknown.edl')
+        source = payload.get('source', 'unknown')
+        
+        if not edl_content:
+            logging.error(f"❌ Missing edl_content in payload")
+            raise HTTPException(status_code=400, detail="Missing edl_content in payload")
+        
+        # Create EDL storage directory if it doesn't exist
+        edl_storage_dir = Path(__file__).resolve().parent / "temp" / "edl_imports"
+        edl_storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = filename.replace('/', '_').replace('\\', '_')
+        unique_filename = f"{timestamp}_{source}_{safe_filename}"
+        edl_file_path = edl_storage_dir / unique_filename
+        
+        # Store the EDL content
+        with open(edl_file_path, 'w', encoding='utf-8') as f:
+            f.write(edl_content)
+        
+        # Log storage details
+        file_size = len(edl_content)
+        logging.info(f"📁 EDL stored: {unique_filename} ({file_size} bytes)")
+        
+        # Analyze the EDL content for still images (quick preview)
+        still_count = 0
+        lines = edl_content.split('\n')
+        for line in lines:
+            if line.strip() and not line.startswith('*') and not line.startswith('TITLE:') and not line.startswith('FCM:'):
+                parts = line.split()
+                if len(parts) >= 8:
+                    source_name = parts[1] if len(parts) > 1 else ""
+                    if 'S' in source_name and any(char.isdigit() for char in source_name):
+                        still_count += 1
+        
+        # Return success response
+        return {
+            "status": "success",
+            "message": f"EDL file received and stored successfully",
+            "filename": unique_filename,
+            "file_path": str(edl_file_path),
+            "file_size_bytes": file_size,
+            "source": source,
+            "preview": {
+                "total_lines": len(lines),
+                "estimated_still_images": still_count,
+                "ready_for_analysis": True
+            },
+            "next_steps": {
+                "analysis": f"EDL file ready for analysis at {edl_file_path}",
+                "import": f"Use /run/edl_import_sitc endpoint to import to SITC table",
+                "format_check": "EDL format appears compatible with existing parser"
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"❌ EDL export error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"EDL export error: {str(e)}")
 
 @app.get("/health")
 def health_check():

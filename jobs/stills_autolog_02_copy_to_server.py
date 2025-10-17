@@ -20,7 +20,7 @@ import config
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 __ARGS__ = ["stills_id"]
-AVID_MAX_DIMENSION = 12000
+AVID_MAX_DIMENSION = 15000
 
 FIELD_MAPPING = {
     "stills_id": "INFO_STILLS_ID",

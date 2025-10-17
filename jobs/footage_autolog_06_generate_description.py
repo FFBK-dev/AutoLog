@@ -497,8 +497,8 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         # Direct API call mode - create own token/session and set final status
         token = config.get_token()
-        continue_workflow = True  # When called as individual endpoint, set status to "7 - Generating Embeddings"
-        print(f"🔄 Individual endpoint mode - will set final status to '7 - Generating Embeddings'")
+        continue_workflow = True  # When called as individual endpoint, set status to "8 - Generating Embeddings"
+        print(f"🔄 Individual endpoint mode - will set final status to '8 - Generating Embeddings'")
     elif len(sys.argv) == 3:
         # Subprocess mode - use provided token from parent process, don't set final status
         token = sys.argv[2]
@@ -577,9 +577,9 @@ if __name__ == "__main__":
             if continue_workflow:
                 print(f"=== Setting final status for {footage_id} ===")
                 
-                # Update footage status to "7 - Generating Embeddings"
-                if update_status(record_id, token, "7 - Generating Embeddings"):
-                    print(f"✅ Footage status updated to '7 - Generating Embeddings'")
+                # Update footage status to "8 - Generating Embeddings"
+                if update_status(record_id, token, "8 - Generating Embeddings"):
+                    print(f"✅ Footage status updated to '8 - Generating Embeddings'")
                     print(f"SUCCESS [generate_description + final status]: {footage_id}")
                 else:
                     print(f"⚠️ Failed to update footage status, but description generation succeeded")

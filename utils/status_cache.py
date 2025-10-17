@@ -148,14 +148,15 @@ class StatusCache:
             "4 - Scraping URL",
             "5 - Processing Frame Info", 
             "6 - Generating Description",
-            "7 - Generating Embeddings",
+            "7 - Avid Description",
+            "8 - Generating Embeddings",
             "Force Resume"
         ]
         
         # Check for terminal success states
         parent_terminal_success_statuses = [
-            "8 - Applying Tags",
-            "9 - Complete"
+            "9 - Applying Tags",
+            "10 - Complete"
         ]
         
         if parent_status in parent_terminal_success_statuses:

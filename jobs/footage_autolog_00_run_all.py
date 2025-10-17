@@ -145,7 +145,7 @@ POLLING_TARGETS = [
         "name": "Step 6: Generate Description",
         "status": "5 - Processing Frame Info",
         "next_status": "6 - Generating Description",
-        "final_status": "7 - Generating Embeddings",  # Set after completion
+        "final_status": "8 - Generating Embeddings",  # Set after completion
         "script": "footage_autolog_06_generate_description.py",
         "timeout": 600,
         "max_workers": 12,  # AI/OpenAI calls - can parallelize well
@@ -860,7 +860,7 @@ def check_all_records_terminal(token, footage_terminal_states, frame_terminal_st
                 # Consider frames with completed parents as effectively terminal
                 if parent_id and parent_id in footage_status_map:
                     parent_status = footage_status_map[parent_id]
-                    if parent_status in ["8 - Applying Tags", "9 - Avid Description", "10 - Complete"]:
+                    if parent_status in ["9 - Applying Tags", "10 - Complete"]:
                         continue  # Skip - parent completed, so frame is effectively done
                 
                 if current_status not in frame_terminal_states and current_status != "Unknown":
@@ -906,9 +906,9 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
     
     # Define terminal states that allow early completion
     footage_terminal_states = [
-        "7 - Generating Embeddings", 
-        "8 - Applying Tags", 
-        "9 - Avid Description",
+        "7 - Avid Description",
+        "8 - Generating Embeddings", 
+        "9 - Applying Tags",
         "10 - Complete", 
         "Awaiting User Input"
     ]
@@ -957,6 +957,7 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                 "4 - Scraping URL",
                 "5 - Processing Frame Info",
                 "6 - Generating Description",
+                "7 - Avid Description",
                 "Force Resume"
                 # NOTE: "Awaiting User Input" is a terminal state - user must manually change status to resume
             ]
@@ -1121,7 +1122,7 @@ def run_polling_workflow(token, poll_duration=3600, poll_interval=30):
                 # Skip frames if their parent has reached terminal success states
                 if parent_id and parent_id in footage_status_map:
                     parent_status = footage_status_map[parent_id]
-                    if parent_status in ["8 - Applying Tags", "9 - Avid Description", "10 - Complete"]:
+                    if parent_status in ["9 - Applying Tags", "10 - Complete"]:
                         # Skip this frame - parent has fully completed workflow
                         continue
                 
@@ -1297,10 +1298,10 @@ def process_footage_task(task, token):
             frames_ready, frame_status = check_frame_completion(token, footage_id)
             if frames_ready:
                 tprint(f"🎯 {footage_id}: ALL FRAMES READY → Step 6: Generate Description")
-                success = run_footage_script(footage_id, "footage_autolog_06_generate_description.py", "6 - Generating Description", "7 - Generating Embeddings", token, task["record_id"])
+                success = run_footage_script(footage_id, "footage_autolog_06_generate_description.py", "6 - Generating Description", "8 - Generating Embeddings", token, task["record_id"])
                 if success:
                     steps_completed += 1
-                    current_status = "7 - Generating Embeddings"
+                    current_status = "8 - Generating Embeddings"
                     # Frame status update is handled in run_footage_script function
                     break  # Final step completed
                 else:
@@ -1486,10 +1487,9 @@ def process_frame_task(task, token, status_cache=None):
 
                             # If parent has reached terminal success states, frame processing is complete
                             parent_terminal_success_statuses = [
-                                "8 - Applying Tags",  # Parent fully completed - frames definitely done
-                                "9 - Avid Description",
+                                "9 - Applying Tags",  # Parent fully completed - frames definitely done
                                 "10 - Complete"
-                                # NOTE: "7 - Generating Embeddings" removed - frames may still need to reach "4 - Audio Transcribed"
+                                # NOTE: "7 - Avid Description" and "8 - Generating Embeddings" removed - frames may still need to reach "4 - Audio Transcribed"
                             ]
                             
                             if parent_status in parent_terminal_success_statuses:
@@ -1500,7 +1500,8 @@ def process_frame_task(task, token, status_cache=None):
                                 "4 - Scraping URL",
                                 "5 - Processing Frame Info",
                                 "6 - Generating Description",
-                                "7 - Generating Embeddings",
+                                "7 - Avid Description",
+                                "8 - Generating Embeddings",
                                 "Force Resume"  # Allow frames to process when parent is force resuming
                             ]
 
