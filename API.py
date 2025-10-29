@@ -383,6 +383,21 @@ def run_job_with_tracking(job_id: str, cmd: List[str]):
                 
                 if filtered_stderr:
                     logging.error(f"❌ {job_id} stderr: {filtered_stderr}")
+            
+            # For failed jobs, log the full stdout to help with debugging
+            if return_code != 0:
+                logging.error(f"❌ {job_id} failed - Full output:")
+                if result.stdout:
+                    for line in result.stdout.split('\n'):
+                        if line.strip() and not any(pattern in line for pattern in [
+                            "urllib3/__init__.py",
+                            "NotOpenSSLWarning",
+                            "urllib3 v2 only supports OpenSSL",
+                            "warnings.warn("
+                        ]):
+                            logging.error(f"   {line}")
+                if not result.stdout and not result.stderr:
+                    logging.error(f"   (No output captured)")
         
         # Final summary and results capture
         job_results = None

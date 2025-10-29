@@ -3,6 +3,7 @@ import sys
 import warnings
 from pathlib import Path
 import os
+from datetime import datetime
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -15,6 +16,8 @@ __ARGS__ = ["music_id"]
 FIELD_MAPPING = {
     "music_id": "INFO_MUSIC_ID",
     "filepath_server": "SPECS_Filepath_Server",
+    "filepath_import": "SPECS_Filepath_Import",
+    "import_timestamp": "SPECS_File_Import_Timestamp",
     "status": "AutoLog_Status"
 }
 
@@ -35,12 +38,41 @@ def rename_file_with_id_prefix(music_id, token):
         # Get current file path
         record_data = config.get_record(token, "Music", record_id)
         current_filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+        current_import_path = record_data.get(FIELD_MAPPING["filepath_import"], "")
+        current_import_timestamp = record_data.get(FIELD_MAPPING["import_timestamp"], "")
         
         if not current_filepath:
             print(f"  -> ERROR: No file path found in SPECS_Filepath_Server")
             return False
         
         print(f"  -> Current path: {current_filepath}")
+        
+        # Store original filename and import timestamp if not already set
+        if not current_import_path or not current_import_timestamp:
+            print(f"  -> Storing original filename and import timestamp")
+            current_filename = Path(current_filepath).name
+            
+            # Extract original filename (remove ID prefix if present)
+            if current_filename.startswith(f"{music_id}_"):
+                original_filename = current_filename[len(f"{music_id}_"):]
+                print(f"  -> Extracted original filename (removed ID prefix): {original_filename}")
+            else:
+                original_filename = current_filename
+                print(f"  -> Using current filename as original: {original_filename}")
+            
+            # Generate import timestamp
+            import_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  -> Import timestamp: {import_timestamp}")
+            
+            # Prepare update data
+            update_import_data = {}
+            if not current_import_path:
+                update_import_data[FIELD_MAPPING["filepath_import"]] = original_filename
+            if not current_import_timestamp:
+                update_import_data[FIELD_MAPPING["import_timestamp"]] = import_timestamp
+            
+            config.update_record(token, "Music", record_id, update_import_data)
+            print(f"  -> Original filename and import timestamp stored")
         
         # Ensure volume is mounted
         if not config.ensure_volume_mounted(current_filepath):

@@ -35,6 +35,117 @@ FIELD_MAPPING = {
 def get_system_globals(token):
     return config.get_system_globals(token)
 
+def flatten_and_convert_to_rgb(img):
+    """
+    Comprehensive image processing to ensure flattened RGB output.
+    Handles: PSDs, layered TIFs, CMYK, LAB, grayscale, 16-bit, RGBA, etc.
+    """
+    print(f"  -> Image mode: {img.mode}, Format: {img.format}, Size: {img.size}")
+    
+    # Handle multi-layered images (PSD, layered TIFF)
+    layers = getattr(img, 'layers', [])
+    # Ensure layers is a list/tuple before calling len()
+    if hasattr(layers, '__len__') and not isinstance(layers, (str, bytes)) and len(layers) > 1:
+        print(f"  -> Detected multi-layered image with {len(layers)} layers - flattening")
+        # Flatten by converting to RGB which automatically composites layers
+        img = img.convert('RGB')
+        print(f"  -> Layers flattened successfully")
+        return img
+    
+    # If image has seek method, try to composite all frames/layers
+    if hasattr(img, 'seek'):
+        try:
+            # Check if there are multiple frames/layers
+            img.seek(1)
+            print(f"  -> Multiple frames/layers detected - compositing")
+            img.seek(0)
+            # Create composite by converting to RGB
+            img = img.convert('RGB')
+            print(f"  -> Frames composited successfully")
+            return img
+        except EOFError:
+            # Only one frame/layer, continue normal processing
+            img.seek(0)
+    
+    # Handle 16-bit images (both grayscale and color)
+    if img.mode in ('I;16', 'I;16L', 'I;16B'):
+        print(f"  -> Detected 16-bit image - converting to 8-bit RGB")
+        # Convert 16-bit to 8-bit by scaling
+        img_array = np.array(img)
+        img_8bit = (img_array / 256).astype(np.uint8)
+        # Convert to RGB
+        img = Image.fromarray(img_8bit, mode='L').convert('RGB')
+        print(f"  -> 16-bit conversion complete")
+        return img
+    
+    # Handle CMYK images (common in print-ready files)
+    if img.mode == 'CMYK':
+        print(f"  -> Converting CMYK to RGB")
+        img = img.convert('RGB')
+        print(f"  -> CMYK conversion complete")
+        return img
+    
+    # Handle LAB color space
+    if img.mode == 'LAB':
+        print(f"  -> Converting LAB to RGB")
+        img = img.convert('RGB')
+        print(f"  -> LAB conversion complete")
+        return img
+    
+    # Handle RGBA (with alpha channel) - flatten alpha
+    if img.mode == 'RGBA':
+        print(f"  -> Converting RGBA to RGB (removing alpha channel)")
+        # Create white background
+        background = Image.new('RGB', img.size, (255, 255, 255))
+        # Paste image on white background using alpha channel as mask
+        background.paste(img, mask=img.split()[3])  # 3 is the alpha channel
+        img = background
+        print(f"  -> Alpha channel removed, image flattened on white background")
+        return img
+    
+    # Handle palette mode images
+    if img.mode == 'P':
+        print(f"  -> Converting palette mode to RGB")
+        img = img.convert('RGB')
+        print(f"  -> Palette conversion complete")
+        return img
+    
+    # Handle grayscale images
+    if img.mode in ('L', '1'):
+        print(f"  -> Converting grayscale to RGB")
+        img = img.convert('RGB')
+        print(f"  -> Grayscale conversion complete")
+        return img
+    
+    # Handle any other exotic modes
+    if img.mode != 'RGB':
+        print(f"  -> Converting {img.mode} to RGB")
+        try:
+            img = img.convert('RGB')
+            print(f"  -> Conversion to RGB complete")
+        except Exception as e:
+            print(f"  -> Warning: Standard conversion failed ({e}), attempting forced conversion")
+            # Force conversion by going through numpy array
+            img_array = np.array(img)
+            if len(img_array.shape) == 2:
+                # Single channel - convert to RGB by repeating
+                img_rgb = np.stack([img_array, img_array, img_array], axis=2)
+                img = Image.fromarray(img_rgb.astype(np.uint8), mode='RGB')
+            else:
+                # Multi-channel - take first 3 channels or pad to 3
+                if img_array.shape[2] >= 3:
+                    img = Image.fromarray(img_array[:,:,:3].astype(np.uint8), mode='RGB')
+                else:
+                    # Pad to 3 channels
+                    img_rgb = np.zeros((*img_array.shape[:2], 3), dtype=np.uint8)
+                    img_rgb[:,:,:img_array.shape[2]] = img_array
+                    img = Image.fromarray(img_rgb, mode='RGB')
+            print(f"  -> Forced conversion successful")
+        return img
+    
+    print(f"  -> Image already in RGB mode")
+    return img
+
 def get_image_dimensions_alternative(import_path):
     """Get image dimensions using alternative methods when PIL fails."""
     print(f"  -> Attempting alternative dimension extraction for: {import_path}")
@@ -206,8 +317,15 @@ def calculate_destination_path(stills_id: str, globals_data: dict) -> str:
     stills_root = f"/Volumes/{server_drive}/{subfolder_path}"
     
     num = int(stills_id.replace('S', ''))
-    range_start = (num // 500) * 500
-    range_end = range_start + 499
+    
+    # Special handling for first range: starts at 1, not 0
+    if num < 500:
+        range_start = 1
+        range_end = 499
+    else:
+        range_start = (num // 500) * 500
+        range_end = range_start + 499
+    
     folder_name = f"S{range_start:05d}-S{range_end:05d}"
     
     destination_folder = os.path.join(stills_root, folder_name)
@@ -272,18 +390,10 @@ if __name__ == "__main__":
                 original_width, original_height = 1920, 1080  # Default fallback
                 img = Image.new('RGB', (original_width, original_height), (255, 255, 255))
         
-        # Process the image - handle 16-bit TIF files properly
-        if img.mode == 'I;16':
-            print(f"  -> Detected 16-bit grayscale image, applying proper conversion")
-            # Use numpy for proper 16-bit to 8-bit conversion
-            import numpy as np
-            img_array = np.array(img)
-            # Scale from 16-bit range (0-65535) to 8-bit range (0-255)
-            img_8bit = (img_array / 256).astype(np.uint8)
-            # Convert back to PIL Image in L mode, then to RGB
-            img = Image.fromarray(img_8bit, mode='L').convert('RGB')
-        elif img.mode not in ('RGB', 'L'):
-            img = img.convert('RGB')
+        # Comprehensive image processing: flatten layers and convert to RGB
+        print(f"🔄 Processing image: flattening and converting to RGB")
+        img = flatten_and_convert_to_rgb(img)
+        print(f"✅ Image processing complete: {img.mode} mode, {img.size[0]}x{img.size[1]}")
         
         if max(img.size) > AVID_MAX_DIMENSION:
             img.thumbnail((AVID_MAX_DIMENSION, AVID_MAX_DIMENSION), Image.Resampling.LANCZOS)

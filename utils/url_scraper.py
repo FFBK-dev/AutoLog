@@ -59,7 +59,12 @@ class URLScraper:
             print(f"  -> Detected website type: {website_type}")
             
             # Try specialized scraper first
-            if website_type == "temple":
+            if website_type == "valentine":
+                content = self._scrape_valentine(url)
+                if content:
+                    print(f"  -> Valentine Museum extraction successful ({len(content)} chars)")
+                    return content
+            elif website_type == "temple":
                 content = self._scrape_temple(url)
                 if content:
                     print(f"  -> Temple University extraction successful ({len(content)} chars)")
@@ -93,6 +98,10 @@ class URLScraper:
     def _detect_website_type(self, url):
         """Detect the type of website for specialized handling."""
         domain = urlparse(url).netloc.lower()
+        
+        # The Valentine Museum (Re:discovery software)
+        if 'valentine.rediscoverysoftware.com' in domain or 'thevalentine.org' in domain:
+            return "valentine"
         
         # Temple University Digital Library
         if 'digital.library.temple.edu' in domain:
@@ -158,6 +167,117 @@ class URLScraper:
             
         except Exception as e:
             print(f"  -> CONTENTdm scraping error: {e}")
+            return None
+    
+    def _scrape_valentine(self, url):
+        """Specialized scraper for The Valentine Museum (Re:discovery software)."""
+        try:
+            # Valentine Museum uses JavaScript to load content, so we need Selenium
+            driver = None
+            try:
+                print(f"  -> Valentine Museum requires JavaScript rendering...")
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument(f"--user-agent={self.headers['User-Agent']}")
+                
+                driver = webdriver.Chrome(options=chrome_options)
+                driver.get(url)
+                
+                # Wait for page to load
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Additional wait for Re:discovery's dynamic content to load
+                time.sleep(5)
+                
+                # Parse the rendered page
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+                
+                metadata_parts = []
+                
+                # Extract title from #redtitle
+                title_elem = soup.find(id='redtitle')
+                if title_elem:
+                    title_text = title_elem.get_text(strip=True)
+                    if title_text:
+                        metadata_parts.append(f"Title: {title_text}")
+                
+                # Extract collection hierarchy from #redboxARH
+                hierarchy_elem = soup.find(id='redboxARH')
+                if hierarchy_elem:
+                    hierarchy_text = hierarchy_elem.get_text(separator=' | ', strip=True)
+                    # Clean up the hierarchy text
+                    hierarchy_text = hierarchy_text.replace('Record Hierarchy - Item', '').strip()
+                    if hierarchy_text:
+                        metadata_parts.append(f"Collection Hierarchy: {hierarchy_text}")
+                
+                # Extract main metadata from table in #robjres
+                robjres_elem = soup.find(id='robjres')
+                if robjres_elem:
+                    # Look for the metadata table
+                    table = robjres_elem.find('table')
+                    if table:
+                        rows = table.find_all('tr')
+                        for row in rows:
+                            cells = row.find_all(['td', 'th'])
+                            if len(cells) >= 2:
+                                key = cells[0].get_text(strip=True).rstrip(':')
+                                value = cells[1].get_text(strip=True)
+                                if key and value and len(value) > 1:
+                                    # Clean up common formatting issues
+                                    if key == "Summary Note":
+                                        # This is often the most important field
+                                        metadata_parts.append(f"Description: {value}")
+                                    else:
+                                        metadata_parts.append(f"{key}: {value}")
+                
+                # If we didn't get a table, try extracting from the #robjres div directly
+                if len(metadata_parts) <= 2 and robjres_elem:
+                    text = robjres_elem.get_text(separator='\n', strip=True)
+                    # Parse key-value pairs from the text
+                    lines = text.split('\n')
+                    i = 0
+                    while i < len(lines):
+                        line = lines[i].strip()
+                        # Look for lines ending with colon (field labels)
+                        if line.endswith(':') and i + 1 < len(lines):
+                            key = line.rstrip(':')
+                            value = lines[i + 1].strip()
+                            if key and value and len(key) < 100 and len(value) > 1:
+                                if key == "Summary Note":
+                                    metadata_parts.append(f"Description: {value}")
+                                else:
+                                    metadata_parts.append(f"{key}: {value}")
+                            i += 2
+                        else:
+                            i += 1
+                
+                # Extract archive number if available
+                archive_no_elem = soup.find(string=re.compile(r'Archive No:', re.I))
+                if archive_no_elem:
+                    parent_text = archive_no_elem.parent.get_text(strip=True) if archive_no_elem.parent else ""
+                    if parent_text:
+                        # Extract just the archive number
+                        match = re.search(r'Archive No:\s*([^\s]+)', parent_text)
+                        if match:
+                            metadata_parts.append(f"Archive Number: {match.group(1)}")
+                
+                if metadata_parts:
+                    return "\n\n".join(metadata_parts)
+                
+                return None
+                
+            finally:
+                if driver:
+                    driver.quit()
+                    
+        except Exception as e:
+            print(f"  -> Valentine Museum scraping error: {e}")
             return None
     
     def _scrape_temple(self, url):
@@ -595,6 +715,17 @@ class URLScraper:
         temple_count = sum(1 for keyword in temple_keywords if keyword in text_lower)
         temple_bonus = min(temple_count * 2, 6)  # Higher bonus for Temple content
         
+        # Check for Valentine Museum keywords
+        valentine_keywords = [
+            "valentine museum", "the valentine", "richmond", "virginia",
+            "phil flournoy", "flournoy", "richmond chamber of commerce",
+            "photograph collection", "tobacco", "archive no", "item nbr",
+            "collection nbr", "phys desc", "circa", "stamped", "verso"
+        ]
+        
+        valentine_count = sum(1 for keyword in valentine_keywords if keyword in text_lower)
+        valentine_bonus = min(valentine_count * 2, 6)  # Higher bonus for Valentine content
+        
         # Check for additional academic/cultural institution keywords
         academic_keywords = [
             "library", "university", "college", "institution", "archives",
@@ -606,7 +737,7 @@ class URLScraper:
         academic_bonus = min(academic_count, 2)
         
         # Calculate total score
-        total_score = useful_count + year_bonus + archival_bonus + temple_bonus + academic_bonus
+        total_score = useful_count + year_bonus + archival_bonus + temple_bonus + valentine_bonus + academic_bonus
         
         # Determine if sufficient
         if boilerplate_count > 3:
@@ -626,6 +757,12 @@ class URLScraper:
                 "sufficient": True, 
                 "score": total_score, 
                 "reason": f"Temple University content with good metadata (score: {total_score})"
+            }
+        elif valentine_bonus > 0 and total_score >= 2:  # Special case for Valentine Museum content
+            return {
+                "sufficient": True, 
+                "score": total_score, 
+                "reason": f"Valentine Museum content with good metadata (score: {total_score})"
             }
         elif useful_count >= 1 and len(text_clean) >= 40 and (year_bonus > 0 or archival_bonus > 0 or academic_bonus > 0):
             return {

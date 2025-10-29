@@ -14,8 +14,9 @@ The workflow uses the `AutoLog_Status` field to track progress:
 2. **1 - File Renamed** → After Step 1 (file renaming)
 3. **2 - Specs Extracted** → After Step 2 (specs extraction)
 4. **3 - Metadata Parsed** → After Step 3 (metadata parsing)
-5. **4 - Complete** → Workflow complete
-6. **Awaiting User Input** → Error state requiring manual intervention
+5. **4 - Notion Queried** → After Step 4 (Notion database query)
+6. **5 - Complete** → Workflow complete
+7. **Awaiting User Input** → Error state requiring manual intervention
 
 ### Workflow Steps
 
@@ -23,10 +24,21 @@ The workflow uses the `AutoLog_Status` field to track progress:
 **Script:** `music_autolog_01_rename_file.py`
 
 - Retrieves the file path from `SPECS_Filepath_Server`
+- **NEW:** Stores the original filename in `SPECS_Filepath_Import` (if not already set)
 - Prepends the `INFO_MUSIC_ID` to the filename
 - Example: `Band of Gideon.wav` → `MX001_Band of Gideon.wav`
 - Updates FileMaker with the new file path
 - Skips renaming if file already has the ID prefix
+
+**Original Filename Preservation:**
+- Extracts original filename by removing ID prefix if present
+- Stores in `SPECS_Filepath_Import` for reference
+- Example: `MX001_Band of Gideon.wav` → `SPECS_Filepath_Import` = `Band of Gideon.wav`
+
+**Import Timestamp Tracking:**
+- Captures the current date/time when the file is processed
+- Stores in `SPECS_File_Import_Timestamp` in format "YYYY-MM-DD HH:MM:SS"
+- Only populates if field is currently empty (preserves original import time)
 
 **Error Handling:**
 - Validates file exists before renaming
@@ -91,6 +103,47 @@ The multi-tool approach handles all common audio formats:
 - Continues processing even if some metadata fields are missing
 - Logs which fields were found vs. not found
 - Stores comprehensive raw metadata for reference
+
+#### Step 4: Query Notion Database
+**Script:** `music_autolog_04_query_notion.py`
+
+**Purpose:** Enriches metadata by querying a Notion database for additional information, specifically ISRC/UPC codes.
+
+**How it works:**
+1. Retrieves song metadata from FileMaker (title, artist, album)
+2. Queries Notion database by song title
+3. Confirms match by comparing artist and album
+4. Calculates match confidence score (0-100%)
+5. If confidence ≥ 50%, retrieves ISRC/UPC from Notion
+6. Updates FileMaker with the ISRC/UPC code
+
+**Match Confidence Algorithm:**
+- **Exact title match:** +50 points
+- **Partial title match:** +30 points
+- **Artist match:** +30 points
+- **Album match:** +20 points
+- **Threshold:** 50% minimum for acceptance
+
+**Smart Behavior:**
+- ✅ Skips if ISRC/UPC already exists in FileMaker
+- ✅ Continues workflow even if no match found (not a failure)
+- ✅ Logs match confidence and reasoning
+- ✅ Handles Notion API errors gracefully
+
+**Notion Properties Used:**
+- `Track Title` (title) - Song title
+- `Artist` (rich_text) - Artist name
+- `Album` (rich_text) - Album name
+- `ISRC/UPC` (rich_text) - ISRC or UPC code
+- `Type` (multi_select) - Cue type (e.g., "Source", "Link Only") → `INFO_Cue_Type` ✅ **NEW**
+- `URL` (url) - Source URL (e.g., Apple Music link) → `SPECS_URL` ✅ **NEW**
+- `Performed By` (rich_text) - Performer name → `INFO_PerformedBy` ✅ **NEW**
+- `Composer` (rich_text) - Composer name → `PUBLISHING_Composer` ✅ **NEW**
+
+**Configuration:**
+The script uses environment variables (with defaults):
+- `NOTION_KEY` - Notion integration token
+- `NOTION_DB_ID` - Notion database ID
 
 ## Field Mapping
 

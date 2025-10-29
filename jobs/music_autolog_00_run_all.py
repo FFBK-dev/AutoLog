@@ -46,18 +46,21 @@ FIELD_MAPPING = {
     "artist": "INFO_Artist",
     "album": "INFO_Album",
     "composer": "PUBLISHING_Composer",
+    "performed_by": "INFO_PerformedBy",
     "genre": "INFO_Genre",
     "release_year": "INFO_Release_Year",
     "track_number": "INFO_Track_Number",
     "isrc_upc": "INFO_ISRC_UPC_Code",
     "copyright": "INFO_Copyright",
+    "cue_type": "INFO_Cue_Type",
+    "url": "SPECS_URL",
     
     # Raw metadata storage
     "metadata": "INFO_Metadata",
     
     # Import tracking
     "imported_by": "SPECS_File_Imported_By",
-    "import_timestamp": "SPECS_File_Import_Timestamp"
+    "import_timestamp": "SPECS_File_Import_Timestamp",
 }
 
 # Define the complete workflow with status updates
@@ -81,8 +84,15 @@ WORKFLOW_STEPS = [
         "status_before": "2 - Specs Extracted",
         "status_after": "3 - Metadata Parsed",
         "script": "music_autolog_03_parse_metadata.py",
-        "description": "Parse Metadata",
-        "final_status": "4 - Complete"
+        "description": "Parse Metadata"
+    },
+    {
+        "step_num": 4,
+        "status_before": "3 - Metadata Parsed",
+        "status_after": "4 - Notion Queried",
+        "script": "music_autolog_04_query_notion.py",
+        "description": "Query Notion Database",
+        "final_status": "5 - Complete"
     }
 ]
 

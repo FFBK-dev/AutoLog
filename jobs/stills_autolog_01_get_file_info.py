@@ -23,6 +23,8 @@ FIELD_MAPPING = {
     "stills_id": "INFO_STILLS_ID",
     "import_path": "SPECS_Filepath_Import",
     "dimensions": "SPECS_File_Dimensions",
+    "dimensions_x": "SPECS_File_Dimensions_X",
+    "dimensions_y": "SPECS_File_Dimensions_Y",
     "size": "SPECS_File_Size",
     "source": "INFO_Source",
     "archival_id": "INFO_Archival_ID",
@@ -151,15 +153,29 @@ def process_single_item(stills_id: str, token: str) -> bool:
 
         # Enhanced image dimension extraction with fallback methods
         dimensions = "Unknown"
+        width = None
+        height = None
         try:
             print(f"  -> Attempting to open image with PIL: {import_path}")
             img = Image.open(import_path)
-            dimensions = f"{img.width}x{img.height}"
+            width = img.width
+            height = img.height
+            dimensions = f"{width}x{height}"
             print(f"  -> Successfully extracted dimensions via PIL: {dimensions}")
         except Exception as e:
             print(f"  -> PIL failed to open image: {e}")
             print(f"  -> Attempting alternative dimension extraction methods...")
             dimensions = get_image_dimensions_alternative(import_path)
+            # Parse width and height from the alternative method result
+            if dimensions and dimensions != "Unknown" and 'x' in dimensions:
+                try:
+                    width_str, height_str = dimensions.split('x')
+                    width = int(width_str)
+                    height = int(height_str)
+                except ValueError:
+                    print(f"  -> Warning: Could not parse dimensions from alternative method: {dimensions}")
+                    width = None
+                    height = None
         
         file_size_mb = f"{os.path.getsize(import_path) / (1024*1024):.2f} Mb"
         
@@ -223,6 +239,12 @@ def process_single_item(stills_id: str, token: str) -> bool:
             FIELD_MAPPING["archival_id"]: archival_id,
             FIELD_MAPPING["file_format"]: file_format
         }
+        
+        # Add separate X and Y dimensions if available
+        if width is not None and height is not None:
+            field_data[FIELD_MAPPING["dimensions_x"]] = width
+            field_data[FIELD_MAPPING["dimensions_y"]] = height
+            print(f"  -> Set dimensions: X={width}, Y={height}")
         
         # Set URL - prioritize XMP URL over generated URL
         if xmp_url:

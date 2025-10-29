@@ -38,7 +38,34 @@ This document lists all website sources currently supported by the FileMaker Bac
   - Structured field extraction
   - Collection hierarchy support
 
-### Government & Cultural Institutions
+### Museums & Cultural Institutions
+
+#### The Valentine Museum
+- **Domains**: `valentine.rediscoverysoftware.com`, `thevalentine.org`
+- **Source Type**: `valentine`
+- **Scraper Method**: `_scrape_valentine()`
+- **Platform**: Re:discovery Collections Management System
+- **Specializations**:
+  - Selenium-based JavaScript rendering (required for dynamic content)
+  - Re:discovery specific element extraction (`#redtitle`, `#robjres`, `#redboxARH`)
+  - Metadata table parsing
+  - Archive number extraction
+  - Collection hierarchy capture
+- **Example URL**: `https://valentine.rediscoverysoftware.com/MADetailB.aspx?rID=PHC0015/-0005.0092#V.86.153.278&db=biblio&dir=VALARCH`
+- **Special Features**:
+  - Enhanced quality evaluation with Valentine-specific keywords
+  - Handles dynamic JavaScript-loaded content
+  - Extracts Richmond Chamber of Commerce photograph metadata
+  - Summary Note field mapped to Description
+  - Support for archival numbering system
+- **Typical Metadata Fields**:
+  - Title, Item Number, Collection Number, File Unit Number
+  - Physical Description, Creator, Creator Role, Dates
+  - Summary Note (comprehensive descriptions)
+  - Extent, Inscriptions/Marks, Citation format
+  - Geographic Name, Genre-Form, Archive Number
+
+### Government Institutions
 
 #### Library of Congress
 - **Domain**: `loc.gov`
@@ -109,6 +136,16 @@ Based on common sources in FileMaker records, consider implementing specialized 
 
 ### Current Institution-Specific Keywords
 
+#### The Valentine Museum
+```python
+valentine_keywords = [
+    "valentine museum", "the valentine", "richmond", "virginia",
+    "phil flournoy", "flournoy", "richmond chamber of commerce",
+    "photograph collection", "tobacco", "archive no", "item nbr",
+    "collection nbr", "phys desc", "circa", "stamped", "verso"
+]
+```
+
 #### Temple University
 ```python
 temple_keywords = [
@@ -129,6 +166,7 @@ academic_keywords = [
 ```
 
 ### Scoring Bonuses
+- **Valentine Museum**: Up to 6 points (2x multiplier)
 - **Temple University**: Up to 6 points (2x multiplier)
 - **Academic Institutions**: Up to 2 points
 - **Historical Content**: Up to 3 points
@@ -157,6 +195,7 @@ academic_keywords = [
 ## Testing Coverage
 
 ### Verified URLs
+- ✅ The Valentine Museum (Re:discovery platform)
 - ✅ Temple University Digital Library
 - ✅ CONTENTdm-based sites
 - ✅ Generic archival sites (fallback)

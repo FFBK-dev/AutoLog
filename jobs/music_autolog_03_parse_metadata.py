@@ -225,6 +225,21 @@ def build_comprehensive_metadata_text(ffprobe_data, exiftool_data, merged_data):
     
     return "\n".join(lines)
 
+def truncate_field(value, max_length=255):
+    """Safely truncate a field value to FileMaker's field size limits."""
+    # Always return a string, even if value is None or empty
+    if value is None or value == "":
+        return ""
+    
+    # Convert to string and strip whitespace
+    value_str = str(value).strip()
+    
+    # Truncate if needed
+    if len(value_str) > max_length:
+        return value_str[:max_length-3] + "..."
+    
+    return value_str
+
 def extract_metadata(music_id, token):
     """Extract metadata from audio file using multiple methods."""
     try:
@@ -313,19 +328,30 @@ def extract_metadata(music_id, token):
         
         print(f"  -> Comprehensive metadata: {len(comprehensive_metadata)} chars")
         
-        # Update FileMaker with extracted metadata
+        # Truncate metadata if too long (FileMaker field size limit protection)
+        MAX_METADATA_LENGTH = 10000  # Conservative limit for FileMaker text fields
+        if len(comprehensive_metadata) > MAX_METADATA_LENGTH:
+            comprehensive_metadata = comprehensive_metadata[:MAX_METADATA_LENGTH-50] + "\n\n... (truncated for length)"
+            print(f"  -> Metadata truncated to {MAX_METADATA_LENGTH} chars to fit FileMaker field")
+        
+        # Update FileMaker with extracted metadata (with field truncation for safety)
         update_data = {
-            FIELD_MAPPING["song_name"]: song_name or "",
-            FIELD_MAPPING["artist"]: artist or "",
-            FIELD_MAPPING["album"]: album or "",
-            FIELD_MAPPING["composer"]: composer or "",
-            FIELD_MAPPING["genre"]: genre or "",
-            FIELD_MAPPING["release_year"]: str(release_year) if release_year else "",
-            FIELD_MAPPING["track_number"]: str(track_number) if track_number else "",
-            FIELD_MAPPING["isrc_upc"]: isrc_upc or "",
-            FIELD_MAPPING["copyright"]: copyright_info or "",
+            FIELD_MAPPING["song_name"]: truncate_field(song_name, 255),
+            FIELD_MAPPING["artist"]: truncate_field(artist, 255),
+            FIELD_MAPPING["album"]: truncate_field(album, 255),
+            FIELD_MAPPING["composer"]: truncate_field(composer, 255),
+            FIELD_MAPPING["genre"]: truncate_field(genre, 100),
+            FIELD_MAPPING["release_year"]: truncate_field(release_year, 10),
+            FIELD_MAPPING["track_number"]: truncate_field(track_number, 10),
+            FIELD_MAPPING["isrc_upc"]: truncate_field(isrc_upc, 50),
+            FIELD_MAPPING["copyright"]: truncate_field(copyright_info, 500),
             FIELD_MAPPING["metadata"]: comprehensive_metadata
         }
+        
+        print(f"  -> Attempting FileMaker update with {len(update_data)} fields...")
+        print(f"  -> Debug: Field lengths - Song:{len(update_data[FIELD_MAPPING['song_name']])}, "
+              f"Artist:{len(update_data[FIELD_MAPPING['artist']])}, "
+              f"Metadata:{len(update_data[FIELD_MAPPING['metadata']])}")
         
         config.update_record(token, "Music", record_id, update_data)
         print(f"  -> FileMaker record updated with metadata")
