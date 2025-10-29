@@ -27,9 +27,15 @@ FIELD_MAPPING = {
 }
 
 # Notion API credentials
-NOTION_KEY = os.getenv('NOTION_KEY', 'YOUR_NOTION_KEY_HERE')
-NOTION_DB_ID = os.getenv('NOTION_DB_ID', 'YOUR_NOTION_DB_ID_HERE')
+NOTION_KEY = os.getenv('NOTION_KEY')
+NOTION_DB_ID = os.getenv('NOTION_DB_ID')
 NOTION_VERSION = "2022-06-28"
+
+# Validate required credentials
+if not NOTION_KEY:
+    raise ValueError("NOTION_KEY environment variable is required")
+if not NOTION_DB_ID:
+    raise ValueError("NOTION_DB_ID environment variable is required")
 
 def query_notion_database(title, artist=None, album=None):
     """
