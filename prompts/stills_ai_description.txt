@@ -10,11 +10,23 @@ For the description, use natural date formatting like "January 1, 2020" or "Circ
 
 Finally, all the information that we have from the source archive for this image follows at the end of this prompt. Please utilize this information in your description as it is a good starting point and known to be accurate, but exclude any copyright info or identification numbers.
 
-Return your answer as a JSON object with exactly these two fields:
-- `description`: [Your 2-sentence description with natural date formatting at the end]
-- `date`: [The date in structured format: YYYY/MM/DD, or YYYY/MM, or just YYYY. If no date available, return an empty string.]
-
 Archive information:
 {INFO_Metadata}
 
 Existing description: {INFO_Description}
+
+CRITICAL TAGGING INSTRUCTIONS:
+1. Choose tags based on what you actually see in the image and read in the description as well as how the tag's use is defined in the apporved tags list.
+2. Do not invent new tags - it is critical to ONLY use tags from the provided list below
+3. Return ONLY the tag names, comma-separated, with no additional text
+4. Select NO MORE than 4 tags that best match the image content and description
+5. If fewer than 4 tags are appropriate, return fewer tags
+
+APPROVED TAGS LIST:
+{TAGS_LIST}
+
+CRITICAL RESPOND INSTRUCTIONS:
+Return your answer as a JSON object with exactly these THREE REQUIRED fields:
+- `description`: [Your 2-sentence description with natural date formatting at the end]
+- `date`: [The date in structured format: YYYY/MM/DD, or YYYY/MM, or just YYYY. If no date available, return an empty string.]
+- `tags`: [REQUIRED - Array of exact tag names from the approved list. Select up to 4 most relevant tags. Format your response EXACTLY as: tag1, tag2, tag3, tag4 (or fewer if appropriate)]

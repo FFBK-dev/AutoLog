@@ -29,6 +29,7 @@ FIELD_MAPPING = {
     "user_prompt": "AI_Prompt",
     "description": "INFO_Description",
     "date": "INFO_Date",
+    "tags_list": "TAGS_List",
     "server_path": "SPECS_Filepath_Server",
     "status": "AutoLog_Status",
     "reviewed_checkbox": "INFO_Reviewed_Checkbox",
@@ -71,6 +72,32 @@ def load_prompts():
     with open(prompts_path, 'r') as f:
         return json.load(f)
 
+def load_tags():
+    """Load the approved tags list from the tags file with descriptions."""
+    tags_path = Path(__file__).resolve().parent.parent / "tags" / "stills-tags.tab"
+    try:
+        with open(tags_path, 'r') as f:
+            # Read all lines and parse tab-separated format: tag_name\tdescription
+            tags = []
+            for line in f.readlines():
+                line = line.strip()
+                if line:
+                    # Split by tab to get name and description
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        tag_name = parts[0].strip()
+                        tag_description = parts[1].strip()
+                        tags.append({'name': tag_name, 'description': tag_description})
+                    elif len(parts) == 1:
+                        # Tag without description
+                        tag_name = parts[0].strip()
+                        tags.append({'name': tag_name, 'description': ''})
+        print(f"  -> Loaded {len(tags)} approved tags with descriptions")
+        return tags
+    except Exception as e:
+        print(f"  -> WARNING: Failed to load tags file: {e}")
+        return []
+
 def truncate_text_for_clip(text, max_chars=250):
     """Truncate text to fit CLIP token limits (roughly 77 tokens = ~250 chars safely)"""
     if not text:
@@ -84,7 +111,7 @@ def handle_openai_with_graceful_retry(client, messages, stills_id, max_retries=5
             print(f"🔄 OpenAI API call attempt {attempt + 1}/{max_retries} for {stills_id}")
             
             response = client.chat_completions_create(
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=messages,
                 response_format={"type": "json_object"},
                 estimated_tokens=2500  # Restored from 2000 to 2500 for better accuracy
@@ -338,11 +365,23 @@ def process_single_item(stills_id, token, continue_workflow=False):
         prompts = load_prompts()
         prompt_template = prompts["stills_ai_description"]
         
+        # Load approved tags list
+        tags = load_tags()
+        # Format tags with descriptions for prompt
+        tags_list_items = []
+        for tag in tags:
+            if tag['description']:
+                tags_list_items.append(f"- {tag['name']}: {tag['description']}")
+            else:
+                tags_list_items.append(f"- {tag['name']}")
+        tags_list_text = "\n".join(tags_list_items)
+        
         # Format the prompt with dynamic fields
         prompt_text = prompt_template.format(
             AI_Prompt=user_prompt if user_prompt else "",
             INFO_Metadata=metadata_from_fm if metadata_from_fm else "",
-            INFO_Description=existing_description if existing_description else ""
+            INFO_Description=existing_description if existing_description else "",
+            TAGS_LIST=tags_list_text
         )
 
         # Log the prompt to AI_DevConsole for prompt engineering visibility
@@ -367,9 +406,21 @@ def process_single_item(stills_id, token, continue_workflow=False):
         
         print(f"DEBUG: Parsed OpenAI response content: {content}")
         
+        # Extract tags from response
+        returned_tags = content.get("tags") or content.get("Tags", [])
+        if returned_tags:
+            print(f"🏷️  TAGS RETURNED: {', '.join(returned_tags)}")
+            print(f"🏷️  TOTAL TAG COUNT: {len(returned_tags)}")
+            # Format tags for FileMaker (comma-separated)
+            tags_for_fm = ", ".join(returned_tags)
+        else:
+            print(f"⚠️  No tags returned in response")
+            tags_for_fm = ""
+        
         update_data = {
             FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
-            FIELD_MAPPING["date"]: content.get("date") or content.get("Date", "")
+            FIELD_MAPPING["date"]: content.get("date") or content.get("Date", ""),
+            FIELD_MAPPING["tags_list"]: tags_for_fm
         }
         
         print(f"DEBUG: Update data: {update_data}")
