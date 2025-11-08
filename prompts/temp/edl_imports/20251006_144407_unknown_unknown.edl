@@ -1,0 +1,11 @@
+TITLE: Unnamed Timeline
+FCM: NON-DROP FRAME
+
+001  AX       V     C        01:00:00:00 01:00:05:00 01:00:00:00 01:00:05:00
+* FROM CLIP NAME: Sample Clip 1
+
+002  AX       V     C        01:00:05:00 01:00:10:00 01:00:05:00 01:00:10:00
+* FROM CLIP NAME: Sample Clip 2
+
+003  AX       A     C        01:00:00:00 01:00:10:00 01:00:00:00 01:00:10:00
+* FROM CLIP NAME: Audio Track

@@ -1,0 +1,49 @@
+{
+  "scenarios": [
+    {
+      "scenario": "Short Video (30 frames)",
+      "frames": 30,
+      "original_calls": 614,
+      "optimized_calls": 119,
+      "reduction": 495,
+      "reduction_pct": 80.61889250814332,
+      "multiplier": 5.159663865546219
+    },
+    {
+      "scenario": "Medium Video (120 frames)",
+      "frames": 120,
+      "original_calls": 2324,
+      "optimized_calls": 308,
+      "reduction": 2016,
+      "reduction_pct": 86.74698795180723,
+      "multiplier": 7.545454545454546
+    },
+    {
+      "scenario": "Long Video (360 frames)",
+      "frames": 360,
+      "original_calls": 6884,
+      "optimized_calls": 796,
+      "reduction": 6088,
+      "reduction_pct": 88.43695525857059,
+      "multiplier": 8.64824120603015
+    },
+    {
+      "scenario": "Very Long Video (720 frames)",
+      "frames": 720,
+      "original_calls": 13724,
+      "optimized_calls": 1516,
+      "reduction": 12208,
+      "reduction_pct": 88.95365782570678,
+      "multiplier": 9.052770448548813
+    }
+  ],
+  "summary": {
+    "avg_reduction_pct": 86.18912338605698,
+    "avg_multiplier": 7.601532516394932
+  },
+  "methodology": {
+    "original_approach": "Individual API calls per frame operation",
+    "optimized_approach": "Local staging with batch operations",
+    "sync_interval": "30 seconds"
+  }
+}

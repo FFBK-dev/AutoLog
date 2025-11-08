@@ -30,6 +30,12 @@ FIELD_MAPPING = {
     "globals_api_key_5": "SystemGlobals_AutoLog_OpenAI_API_Key_5"
 }
 
+def load_prompts():
+    """Load prompts from prompts.json."""
+    prompts_path = Path(__file__).resolve().parent.parent / "prompts" / "prompts.json"
+    with open(prompts_path, 'r') as f:
+        return json.load(f)
+
 def load_tags():
     """Load the approved tags list from the tags file with descriptions."""
     tags_path = Path(__file__).resolve().parent.parent / "tags" / "stills-tags.tab"
@@ -82,6 +88,10 @@ def analyze_with_openai(image_path, description, tags, client, stills_id):
         if not base64_image:
             return None
         
+        # Load prompt template
+        prompts = load_prompts()
+        prompt_template = prompts["stills_autotag"]
+        
         # Format tags for prompt
         tag_list = []
         for tag in tags:
@@ -92,36 +102,18 @@ def analyze_with_openai(image_path, description, tags, client, stills_id):
         
         tags_text = "\n".join(tag_list)
         
-        # Create prompt
-        system_prompt = """You are an expert at analyzing historical images and metadata to assign appropriate tags.
-Your task is to analyze the provided image and its description, then select up to 4 most relevant tags from the provided list.
-
-CRITICAL INSTRUCTIONS:
-1. Do not invent new tags - it is critical to ONLY use tags from the provided list
-2. Choose tags based on what you actually see in the image and read in the description
-3. Select NO MORE than 4 tags that best match the image content and description
-4. If fewer than 4 tags are appropriate, return fewer tags
-
-Return your answer as a JSON object with exactly one field:
-- `tags`: [Array of exact tag names from the approved list. Select up to 4 most relevant tags.]"""
-
-        user_prompt = f"""Analyze this historical image and its description, then select up to 4 most relevant tags from the list below.
-
-IMAGE DESCRIPTION:
-{description if description else "No description provided"}
-
-APPROVED TAGS LIST:
-{tags_text}
-
-Return ONLY a JSON object with a "tags" field containing an array of tag names."""
+        # Format the prompt with dynamic fields
+        prompt_text = prompt_template.format(
+            INFO_Description=description if description else "No description provided",
+            TAGS_LIST=tags_text
+        )
 
         # Build messages for OpenAI
         messages = [
-            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": user_prompt},
+                    {"type": "text", "text": prompt_text},
                     {
                         "type": "image_url",
                         "image_url": {

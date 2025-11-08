@@ -1,0 +1,17 @@
+TITLE:   Untitled Sequence.01 
+FCM: NON-DROP FRAME 
+000001  S00006.JPG                                                                                                                        V     C        01:00:00:00 01:01:00:00 01:00:00:00 01:01:00:00 
+*FROM CLIP NAME:  S00006 
+000002  A022C007_230921_R3WV                                                                                                              V     C        19:15:02:00 19:15:22:02 01:01:00:00 01:01:20:02 
+*IMAGE, COLOR ADAPTER 
+*FROM CLIP NAME:  LF0047 
+000003  A021C012_230921_R3WV                                                                                                              V     C        18:28:56:16 18:29:13:11 01:01:20:02 01:01:36:21 
+*IMAGE, COLOR ADAPTER 
+*FROM CLIP NAME:  LF0012 
+000005  S00014.JPG                                                                                                                        V     C        01:00:00:00 01:00:59:14 01:01:55:07 01:02:54:21 
+*FROM CLIP NAME:  S00014 
+000006  S00058.JPG                                                                                                                        V     C        01:00:00:00 01:01:00:00 01:02:54:21 01:03:54:21 
+*FROM CLIP NAME:  S00058 
+000004  A024C038_230922_R3WV                                                                                                              AA/V  C        13:20:22:19 13:20:41:05 01:01:36:21 01:01:55:07 
+*IMAGE, COLOR ADAPTER 
+*FROM CLIP NAME:  AF0114 
