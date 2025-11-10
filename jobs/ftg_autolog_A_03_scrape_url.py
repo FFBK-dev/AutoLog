@@ -20,7 +20,8 @@ FIELD_MAPPING = {
     "metadata": "INFO_Metadata",
     "description": "INFO_Description",
     "source": "INFO_Source",
-    "archival_id": "INFO_Archival_ID"
+    "archival_id": "INFO_Archival_ID",
+    "status": "AutoLog_Status"
 }
 
 def scrape_url_content(url, max_retries=3):
@@ -101,6 +102,23 @@ if __name__ == "__main__":
     try:
         print(f"Starting URL scraping for footage {footage_id}")
         
+        # SKIP URL SCRAPING FOR LF ITEMS - they don't need archival metadata
+        if footage_id.startswith("LF"):
+            print(f"⚠️ LF item detected - skipping URL scraping (not needed for LF footage)")
+            print(f"  -> Setting status to 'Awaiting User Input'")
+            
+            # Get record and update status directly
+            record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
+            status_update = {FIELD_MAPPING["status"]: "Awaiting User Input"}
+            update_response = config.update_record(token, "FOOTAGE", record_id, status_update)
+            
+            if update_response.status_code == 200:
+                print(f"✅ Set status to 'Awaiting User Input' for LF item {footage_id}")
+            else:
+                print(f"❌ Failed to update status: {update_response.status_code}")
+            
+            sys.exit(0)  # Exit successfully - LF items skip URL scraping
+        
         # Get the current record
         record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
         record_data = config.get_record(token, "FOOTAGE", record_id)
@@ -114,7 +132,7 @@ if __name__ == "__main__":
             print(f"  -> Setting status to 'Awaiting User Input' - user needs to add metadata or URL")
             
             # Update status to awaiting user input
-            status_update = {"fieldData": {"AutoLog_Status": "Awaiting User Input"}}
+            status_update = {FIELD_MAPPING["status"]: "Awaiting User Input"}
             update_response = config.update_record(token, "FOOTAGE", record_id, status_update)
             
             if update_response.status_code == 200:
@@ -137,7 +155,7 @@ if __name__ == "__main__":
             print(f"  -> Setting status to 'Awaiting User Input' - invalid URL")
             
             # Update status to awaiting user input
-            status_update = {"fieldData": {"AutoLog_Status": "Awaiting User Input"}}
+            status_update = {FIELD_MAPPING["status"]: "Awaiting User Input"}
             update_response = config.update_record(token, "FOOTAGE", record_id, status_update)
             
             if update_response.status_code == 200:
@@ -190,7 +208,7 @@ if __name__ == "__main__":
             field_data[FIELD_MAPPING["metadata"]] = combined_metadata
         
         # Always update status to "Awaiting User Input" (Part A complete)
-        field_data["AutoLog_Status"] = "Awaiting User Input"
+        field_data[FIELD_MAPPING["status"]] = "Awaiting User Input"
         
         update_response = config.update_record(token, "FOOTAGE", record_id, field_data)
         

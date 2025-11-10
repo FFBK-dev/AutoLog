@@ -21,7 +21,8 @@ __ARGS__ = ["footage_id"]
 FIELD_MAPPING = {
     "footage_id": "INFO_FTG_ID",
     "filepath": "SPECS_Filepath_Server",
-    "thumbnail": "SPECS_Thumbnail"
+    "thumbnail": "SPECS_Thumbnail",
+    "status": "AutoLog_Status"
 }
 
 

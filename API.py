@@ -204,6 +204,41 @@ async def shutdown_event():
             logging.warning(f"⚠️ Worker shutdown had issues: {result.stderr[:200]}")
     except Exception as e:
         logging.error(f"❌ Error stopping workers: {e}")
+    
+    # Clear RQ queues on shutdown (since workers are stopped)
+    # This prevents stale jobs from persisting across API restarts
+    logging.info("🧹 Clearing RQ queues...")
+    try:
+        from jobs.ftg_autolog_B_queue_jobs import q_step1, q_step2, q_step3, q_step4
+        
+        total_cleared = 0
+        for queue, name in [
+            (q_step1, "Step 1"),
+            (q_step2, "Step 2"),
+            (q_step3, "Step 3"),
+            (q_step4, "Step 4")
+        ]:
+            count = len(queue)
+            if count > 0:
+                queue.empty()
+                total_cleared += count
+                logging.info(f"  ✅ Cleared {name}: {count} items")
+            
+            # Also clear failed registries
+            try:
+                failed_count = queue.failed_job_registry.count
+                if failed_count > 0:
+                    queue.failed_job_registry.empty()
+                    logging.info(f"  ✅ Cleared {name} failed: {failed_count} items")
+            except:
+                pass
+        
+        if total_cleared > 0:
+            logging.info(f"✅ Queue cleanup complete: {total_cleared} items cleared")
+        else:
+            logging.info("✅ Queue cleanup complete: queues were empty")
+    except Exception as e:
+        logging.error(f"❌ Error clearing queues: {e}")
 
 # Helper function for synchronous metadata processing
 def execute_metadata_query_sync(payload: dict):

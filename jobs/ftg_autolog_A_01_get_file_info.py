@@ -609,8 +609,11 @@ if __name__ == "__main__":
             print(f"     Cleaned: {cleaned_archival_id}")
         
         # Step 6: Try to build URL from source and archival_id if no URL found yet
+        # SKIP URL GENERATION FOR LF ITEMS - they don't need archival URLs
         url_source = "metadata" if url else None
-        if not url and source and cleaned_archival_id and source.strip() and cleaned_archival_id.strip():
+        if footage_id.startswith("LF"):
+            print(f"  -> Skipping URL generation for LF item (not needed)")
+        elif not url and source and cleaned_archival_id and source.strip() and cleaned_archival_id.strip():
             print(f"  -> No URL found in metadata, attempting to build from source...")
             generated_url = find_url_from_source_and_archival_id(token, source, cleaned_archival_id)
             if generated_url:

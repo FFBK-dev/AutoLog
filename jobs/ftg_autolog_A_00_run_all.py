@@ -13,6 +13,7 @@ Ends at "Awaiting User Input" - user must add prompt before AI processing.
 import sys
 import warnings
 import subprocess
+import concurrent.futures
 from pathlib import Path
 
 # Suppress urllib3 LibreSSL warning
@@ -149,21 +150,42 @@ if __name__ == "__main__":
             print("\n✅ No pending imports found\n")
             sys.exit(0)
         
-        print(f"\n📦 Processing {len(footage_ids)} items...\n")
+        print(f"\n📦 Processing {len(footage_ids)} items in parallel...\n")
         
-        # Process each item sequentially (fast steps, no queue needed)
+        # Process items in parallel with ThreadPoolExecutor
+        # Use up to 10 workers for parallel processing (reasonable for I/O bound tasks)
+        max_workers = min(10, len(footage_ids))
         success_count = 0
-        for footage_id in footage_ids:
-            try:
-                if process_import(footage_id, token):
-                    success_count += 1
-            except subprocess.TimeoutExpired:
-                print(f"⏱️  Timeout processing {footage_id}")
-            except Exception as e:
-                print(f"❌ Error processing {footage_id}: {e}")
+        failed_items = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all items for processing
+            future_to_footage = {
+                executor.submit(process_import, footage_id, token): footage_id 
+                for footage_id in footage_ids
+            }
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_footage):
+                footage_id = future_to_footage[future]
+                try:
+                    if future.result():
+                        success_count += 1
+                        print(f"✅ {footage_id} completed successfully")
+                    else:
+                        failed_items.append(footage_id)
+                        print(f"❌ {footage_id} failed")
+                except subprocess.TimeoutExpired:
+                    print(f"⏱️  Timeout processing {footage_id}")
+                    failed_items.append(footage_id)
+                except Exception as e:
+                    print(f"❌ Error processing {footage_id}: {e}")
+                    failed_items.append(footage_id)
         
         print(f"\n{'='*60}")
         print(f"✅ Import complete: {success_count}/{len(footage_ids)} items successful")
+        if failed_items:
+            print(f"❌ Failed items: {', '.join(failed_items)}")
         print(f"{'='*60}\n")
         
     except Exception as e:
