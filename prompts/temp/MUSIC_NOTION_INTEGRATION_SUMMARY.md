@@ -56,7 +56,7 @@ Tested with FileMaker records MX0006-08:
 ### Notion Database Configuration
 
 **Database:** Music Options  
-**Database ID:** `26f55135bed98066a711c03b6f701425`
+**Database ID:** `YOUR_NOTION_DB_ID_HERE`
 
 **Properties Used:**
 - `Track Title` (title) - Song title
@@ -65,9 +65,9 @@ Tested with FileMaker records MX0006-08:
 - `ISRC/UPC` (rich_text) - ISRC or UPC code
 
 **Credentials:**
-- Stored in script with environment variable fallbacks
-- `NOTION_KEY` - Integration token
-- `NOTION_DB_ID` - Database ID
+- Stored in environment variables (`.env` file)
+- `NOTION_KEY` - Integration token (required)
+- `NOTION_DB_ID` - Database ID (required)
 
 ### Files Created/Modified
 

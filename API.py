@@ -62,8 +62,27 @@ async def lifespan(app: FastAPI):
         # Mount project volume (for bin scanning)
         if config.mount_volume("project"):
             logging.info("✅ Project volume mounted successfully")
+            
+            # Scan bins after successful mount
+            try:
+                logging.info("🔍 Scanning Avid bins from PROJECT_E2E...")
+                from utils.bin_scanner import scan_all_bins
+                
+                results = scan_all_bins()
+                
+                # Log results
+                for media_type, result in results.items():
+                    if result.get("success"):
+                        logging.info(f"  ✅ {media_type}: {result['bin_count']} bins")
+                    else:
+                        logging.warning(f"  ⚠️ {media_type}: {result.get('error', 'Unknown error')}")
+                
+                logging.info("✅ Bin scan complete")
+                
+            except Exception as scan_error:
+                logging.warning(f"⚠️ Bin scan failed (will retry on-demand): {scan_error}")
         else:
-            logging.warning("⚠️ Failed to mount project volume")
+            logging.warning("⚠️ Failed to mount project volume - bin scanning skipped")
             
     except Exception as e:
         logging.error(f"❌ Error during volume mounting: {e}")
