@@ -22,6 +22,7 @@ FIELD_MAPPING = {
     "description": "INFO_Description",
     "server_path": "SPECS_Filepath_Server",
     "tags_list": "TAGS_List",
+    "primary_bin": "INFO_PrimaryBin",
     "dev_console": "AI_DevConsole",
     "globals_api_key_1": "SystemGlobals_AutoLog_OpenAI_API_Key_1",
     "globals_api_key_2": "SystemGlobals_AutoLog_OpenAI_API_Key_2",
@@ -62,6 +63,26 @@ def load_tags():
         print(f"  -> WARNING: Failed to load tags file: {e}")
         return []
 
+def load_bins():
+    """Load the approved bins list from the bins file."""
+    bins_path = Path(__file__).resolve().parent.parent / "tags" / "stills-bins.txt"
+    try:
+        with open(bins_path, 'r') as f:
+            bins = []
+            for line in f.readlines():
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    # Support both formats: just name, or name\tdescription
+                    parts = line.split('\t')
+                    bin_name = parts[0].strip()
+                    bins.append(bin_name)
+        print(f"  -> Loaded {len(bins)} approved bins")
+        return bins
+    except Exception as e:
+        print(f"  -> WARNING: Failed to load bins file: {e}")
+        return []
+
 def encode_image_to_base64(image_path):
     """Encode image to base64 for OpenAI Vision API."""
     try:
@@ -78,8 +99,8 @@ def encode_image_to_base64(image_path):
         print(f"❌ Error encoding image: {e}")
         return None
 
-def analyze_with_openai(image_path, description, tags, client, stills_id):
-    """Send image and description to OpenAI with tag list for analysis."""
+def analyze_with_openai(image_path, description, tags, bins, client, stills_id):
+    """Send image and description to OpenAI with tag list and bins list for analysis."""
     try:
         print(f"🤖 Analyzing image with OpenAI Vision API for {stills_id}...")
         
@@ -102,10 +123,15 @@ def analyze_with_openai(image_path, description, tags, client, stills_id):
         
         tags_text = "\n".join(tag_list)
         
+        # Format bins for prompt
+        bins_list = [f"- {bin_name}" for bin_name in bins]
+        bins_text = "\n".join(bins_list)
+        
         # Format the prompt with dynamic fields
         prompt_text = prompt_template.format(
             INFO_Description=description if description else "No description provided",
-            TAGS_LIST=tags_text
+            TAGS_LIST=tags_text,
+            BINS_LIST=bins_text
         )
 
         # Build messages for OpenAI
@@ -154,7 +180,7 @@ def analyze_with_openai(image_path, description, tags, client, stills_id):
             else:
                 print(f"⚠️  No tags returned in response")
             
-            return selected_tags
+            return content  # Return full content dict instead of just tags
             
         except json.JSONDecodeError as e:
             print(f"❌ Failed to parse JSON response: {e}")
@@ -211,28 +237,51 @@ def process_single_item(stills_id, token):
         if not tags:
             raise ValueError("Failed to load tags from stills-tags.tab")
         
+        # Load bins
+        bins = load_bins()
+        if not bins:
+            raise ValueError("Failed to load bins from stills-bins.txt")
+        
         # Analyze with OpenAI
-        selected_tags = analyze_with_openai(
+        content = analyze_with_openai(
             server_path,
             description,
             tags,
+            bins,
             global_openai_client,
             stills_id
         )
         
-        if selected_tags:
+        if content and content.get('tags'):
+            # Extract tags from response
+            selected_tags = content.get('tags', [])
+            
+            # Ensure selected_tags is a list (sometimes API returns string by mistake)
+            if isinstance(selected_tags, str):
+                selected_tags = [selected_tags]
+            
             # Format tags for FileMaker (comma-separated)
             tags_for_fm = ", ".join(selected_tags)
             
+            # Extract primary bin from response
+            primary_bin = content.get('primary_bin', '')
+            if primary_bin:
+                print(f"🗂️  PRIMARY BIN: {primary_bin}")
+            else:
+                print(f"⚠️  No primary bin returned in response")
+            
             # Update FileMaker
             update_data = {
-                FIELD_MAPPING["tags_list"]: tags_for_fm
+                FIELD_MAPPING["tags_list"]: tags_for_fm,
+                FIELD_MAPPING["primary_bin"]: primary_bin
             }
             
             config.update_record(token, "Stills", record_id, update_data)
             
             print(f"\n✅ SUCCESS: {stills_id}")
             print(f"   Tags written to FileMaker: {tags_for_fm}")
+            if primary_bin:
+                print(f"   Primary bin written to FileMaker: {primary_bin}")
             return True
         else:
             print(f"\n❌ FAILED: {stills_id} - No tags returned")

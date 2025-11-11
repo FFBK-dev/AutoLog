@@ -7,6 +7,7 @@ CRITICAL INSTRUCTIONS:
 2. Choose tags based on what you actually see in the image and read in the description
 3. Select NO MORE than 4 tags that best match the image content and description
 4. If fewer than 4 tags are appropriate, return fewer tags
+5. After selecting your tags, choose ONE SINGLE tag from your selected tags that is MOST representative of the image - this will be the primary tag
 
 IMAGE DESCRIPTION:
 {INFO_Description}
@@ -14,6 +15,7 @@ IMAGE DESCRIPTION:
 APPROVED TAGS LIST:
 {TAGS_LIST}
 
-Return your answer as a JSON object with exactly one field:
+Return your answer as a JSON object with exactly TWO fields:
 - `tags`: [Array of exact tag names from the approved list. Select up to 4 most relevant tags.]
+- `primary_tag`: [REQUIRED - Single most representative tag selected from your tags array above]
 

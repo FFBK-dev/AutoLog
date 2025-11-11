@@ -20,6 +20,7 @@ __ARGS__ = ["footage_id"]
 FIELD_MAPPING = {
     "footage_id": "INFO_FTG_ID",
     "tags_list": "TAGS_List",
+    "primary_bin": "INFO_PrimaryBin",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_caption": "FRAMES_Caption",
     "frame_transcript": "FRAMES_Transcript",
@@ -150,6 +151,7 @@ CRITICAL INSTRUCTIONS:
 3. Select NO MORE than 4 tags that best match the footage content
 4. If fewer than 4 tags are appropriate, return fewer tags
 5. Focus on the most prominent and consistent elements across the frames
+6. After selecting your tags, choose ONE SINGLE tag from your selected tags that is MOST representative of the footage - this will be the primary tag
 
 FRAME-BY-FRAME CONTENT:
 {frame_content}
@@ -157,8 +159,9 @@ FRAME-BY-FRAME CONTENT:
 APPROVED TAGS LIST:
 {tags_list_text}
 
-Return your answer as a JSON object with exactly one field:
-- `tags`: [Array of exact tag names from the approved list. Select up to 4 most relevant tags. Format as: ["tag1", "tag2", "tag3", "tag4"] or fewer if appropriate.]"""
+Return your answer as a JSON object with exactly TWO fields:
+- `tags`: [Array of exact tag names from the approved list. Select up to 4 most relevant tags. Format as: ["tag1", "tag2", "tag3", "tag4"] or fewer if appropriate.]
+- `primary_tag`: [REQUIRED - Single most representative tag selected from your tags array above]"""
 
         # Make OpenAI API call
         print(f"  -> Calling OpenAI API for tag generation...")
@@ -176,6 +179,7 @@ Return your answer as a JSON object with exactly one field:
         try:
             data = json.loads(response_text)
             returned_tags = data.get('tags', [])
+            primary_tag = data.get('primary_tag', '')
             
             # Ensure tags is a list
             if isinstance(returned_tags, str):
@@ -186,15 +190,20 @@ Return your answer as a JSON object with exactly one field:
             print(f"🏷️  TAGS RETURNED: {', '.join(returned_tags) if returned_tags else 'None'}")
             print(f"🏷️  TOTAL TAG COUNT: {len(returned_tags)}")
             
-            return returned_tags
+            if primary_tag:
+                print(f"⭐ PRIMARY TAG: {primary_tag}")
+            else:
+                print(f"⚠️  No primary tag returned")
+            
+            return {'tags': returned_tags, 'primary_tag': primary_tag}
             
         except json.JSONDecodeError as e:
             print(f"  -> ERROR: Failed to parse JSON response: {e}")
-            return []
+            return None
         
     except Exception as e:
         print(f"❌ Error generating tags: {e}")
-        return []
+        return None
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -234,19 +243,26 @@ if __name__ == "__main__":
         client = setup_openai_client(token)
         
         # Generate tags
-        returned_tags = generate_tags_from_frames(client, frames_data, tags)
+        result = generate_tags_from_frames(client, frames_data, tags)
         
-        if not returned_tags:
+        if not result or not result.get('tags'):
             print(f"⚠️ No tags were generated")
-            # Still update with empty string to clear any existing tags
+            # Still update with empty strings to clear any existing tags
             tags_for_fm = ""
+            primary_tag = ""
         else:
             # Format tags for FileMaker (comma-separated)
-            tags_for_fm = ", ".join(returned_tags)
+            # Ensure tags is a list (sometimes API returns string by mistake)
+            tags = result['tags']
+            if isinstance(tags, str):
+                tags = [tags]
+            tags_for_fm = ", ".join(tags)
+            primary_tag = result.get('primary_tag', '')
         
-        # Update only the TAGS_List field
+        # Update TAGS_List and INFO_PrimaryBin fields
         field_data = {
-            FIELD_MAPPING["tags_list"]: tags_for_fm
+            FIELD_MAPPING["tags_list"]: tags_for_fm,
+            FIELD_MAPPING["primary_bin"]: primary_tag
         }
         
         update_response = config.update_record(token, "FOOTAGE", record_id, field_data)
@@ -254,6 +270,8 @@ if __name__ == "__main__":
         if update_response.status_code == 200:
             print(f"✅ Successfully updated tags for footage {footage_id}")
             print(f"  -> Tags: {tags_for_fm if tags_for_fm else 'None'}")
+            if primary_tag:
+                print(f"  -> Primary Tag: {primary_tag}")
             sys.exit(0)
         else:
             print(f"❌ Failed to update footage record: {update_response.status_code}")

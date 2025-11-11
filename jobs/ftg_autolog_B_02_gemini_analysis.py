@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-LF AutoLog Step 4: Gemini Multi-Image Analysis
+Footage AutoLog B Step 2: Gemini Multi-Image Analysis
 - Loads sampled frames with timecodes
 - Includes FileMaker metadata (AI_Prompt, INFO_Metadata, etc.)
 - Sends all frames to Gemini in single request
 - Returns structured JSON with per-frame captions and global metadata
+- Supports both LF (Library Footage) and AF (Archival Footage)
 """
 
 import sys
@@ -141,7 +142,8 @@ Return your analysis as strict JSON with this exact structure:
     "location": "Proper noun location name from context (e.g. 'Myrtle Grove Plantation', 'Independence Hall', 'Golden Gate Bridge'). Use the FULL proper noun name if provided in context. Empty string if no specific location name in context.",
     "audio_type": "Sound or MOS (will be determined from audio detection)",
     "camera_summary": ["List of camera movements detected across the sequence"],
-    "tags": ["Select up to 4 most relevant tags from approved list"]
+    "tags": ["Select up to 4 most relevant tags from approved list"],
+    "primary_tag": "REQUIRED - Select ONE SINGLE tag from your tags array above that is MOST representative of this footage"
   }},
   "frames": [
     {{
@@ -202,11 +204,11 @@ if __name__ == "__main__":
         record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
         footage_data = config.get_record(token, "FOOTAGE", record_id)
         
-        # Load assessment data from step 3
-        assessment_path = f"/private/tmp/lf_autolog_{footage_id}/assessment.json"
+        # Load assessment data from step 1 (supports both LF and AF prefixes)
+        assessment_path = f"/private/tmp/ftg_autolog_{footage_id}/assessment.json"
         
         if not os.path.exists(assessment_path):
-            raise FileNotFoundError(f"Assessment file not found: {assessment_path}. Run step 3 first.")
+            raise FileNotFoundError(f"Assessment file not found: {assessment_path}. Run step 1 first.")
         
         with open(assessment_path, 'r') as f:
             assessment_data = json.load(f)
@@ -264,9 +266,10 @@ if __name__ == "__main__":
                         "tags": {
                             "type": "array",
                             "items": {"type": "string"}
-                        }
+                        },
+                        "primary_tag": {"type": "string"}
                     },
-                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags"]
+                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags", "primary_tag"]
                 },
                 "frames": {
                     "type": "array",
@@ -335,6 +338,7 @@ if __name__ == "__main__":
         print(f"  Location: {gemini_result['global']['location']}")
         print(f"  Audio Type: {gemini_result['global']['audio_type']}")
         print(f"  Tags: {', '.join(gemini_result['global']['tags'])}")
+        print(f"  Primary Tag: {gemini_result['global'].get('primary_tag', 'None')}")
         print(f"  Frames analyzed: {len(gemini_result['frames'])}")
         
         print(f"\n✅ Gemini analysis completed for {footage_id}")

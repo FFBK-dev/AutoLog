@@ -9,6 +9,8 @@ warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from utils.url_validator import clean_archival_id_for_url, construct_url_from_source_and_id, validate_and_test_url
+from utils.urls_cache import global_urls_cache
+from utils.archive_detector import auto_detect_and_register
 
 __ARGS__ = ["footage_id"]
 
@@ -486,32 +488,47 @@ def analyze_thumbnail_for_color(thumbnail_path):
         print(f"  -> Error analyzing thumbnail: {e}")
         return None
 
-def find_url_from_source_and_archival_id(token, source, archival_id):
-    """Find URL root from URLs layout based on source and combine with archival ID."""
+def find_url_from_source_and_archival_id(token, source, archival_id, record_id=None):
+    """
+    Find URL root from URLs cache/layout and combine with archival ID.
+    Uses cached URLs to reduce FileMaker API calls.
+    Attempts auto-detection for unknown archives.
+    
+    Args:
+        token (str): FileMaker token
+        source (str): Archive/source name
+        archival_id (str): Archival ID
+        record_id (str): Optional - FileMaker record ID for DevConsole logging
+    
+    Returns:
+        str: Constructed URL or None
+    """
     print(f"  -> Attempting to find URL root for source: {source}")
     
     try:
-        # Query the URLs layout for the source
-        query = {"query": [{"Archive": f"=={source}"}], "limit": 1}
-        response = requests.post(
-            config.url("layouts/URLs/_find"),
-            headers=config.api_headers(token),
-            json=query,
-            verify=False
-        )
-        response.raise_for_status()
+        # Try cache first (loads all URLs on first access)
+        url_root = global_urls_cache.get_url_root(source, token)
         
-        records = response.json().get('response', {}).get('data', [])
-        if not records:
-            print(f"  -> No URL root found for source: {source}")
-            return None
-            
-        url_root = records[0]['fieldData'].get('URL Root', '')
+        # If not found in cache, try auto-detection
         if not url_root:
-            print(f"  -> URL Root field is empty for source: {source}")
+            print(f"  -> Source '{source}' not found in URLs table")
+            print(f"  -> Attempting automatic URL detection...")
+            
+            # Auto-detect and register new archive
+            url_root = auto_detect_and_register(source, archival_id, token, record_id)
+            
+            if url_root:
+                # Success! Add to cache for future use
+                global_urls_cache.add_to_cache(source, url_root)
+            else:
+                # Failed to detect - already logged by auto_detect_and_register
+                return None
+        
+        if not url_root:
+            print(f"  -> No URL root available for source: {source}")
             return None
         
-        # Use the new URL construction utility with cleaning
+        # Use the URL construction utility with cleaning
         constructed_url = construct_url_from_source_and_id(url_root, archival_id, source)
         if not constructed_url:
             print(f"  -> Failed to construct URL after cleaning archival ID")
@@ -615,7 +632,7 @@ if __name__ == "__main__":
             print(f"  -> Skipping URL generation for LF item (not needed)")
         elif not url and source and cleaned_archival_id and source.strip() and cleaned_archival_id.strip():
             print(f"  -> No URL found in metadata, attempting to build from source...")
-            generated_url = find_url_from_source_and_archival_id(token, source, cleaned_archival_id)
+            generated_url = find_url_from_source_and_archival_id(token, source, cleaned_archival_id, record_id)
             if generated_url:
                 url = generated_url  # Use generated URL
                 url_source = "generated"
@@ -624,7 +641,7 @@ if __name__ == "__main__":
                 print(f"  -> Could not generate URL from source: {source}")
         elif not url and source and archival_id and source.strip() and archival_id.strip():
             print(f"  -> No URL found in metadata, attempting to build from source (using original archival ID)...")
-            generated_url = find_url_from_source_and_archival_id(token, source, archival_id)
+            generated_url = find_url_from_source_and_archival_id(token, source, archival_id, record_id)
             if generated_url:
                 url = generated_url  # Use generated URL
                 url_source = "generated"

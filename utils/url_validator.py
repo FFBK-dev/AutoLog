@@ -87,6 +87,49 @@ def clean_archival_id_for_url(archival_id, source):
                 cleaned_id = cleaned_id[len(prefix):]
                 break
     
+    # ArtGrid specific cleaning
+    elif source and "artgrid" in source.lower():
+        # Extract ID before first underscore
+        # Pattern: 557465_Plants_Field_Weeds_Blur_By_Ami_Bornstein_Artlist_HD
+        if "_" in cleaned_id:
+            cleaned_id = cleaned_id.split("_")[0]
+    
+    # FilmSupply specific cleaning
+    elif source and "filmsupply" in source.lower():
+        # Extract ID before '-filmsupply'
+        # Pattern: Marco-Schott-foggy-field-59522-filmsupply
+        if "-filmsupply" in cleaned_id.lower():
+            parts = cleaned_id.lower().split("-filmsupply")[0].split("-")
+            # Last numeric part is the ID
+            for part in reversed(parts):
+                if part.isdigit():
+                    cleaned_id = part
+                    break
+    
+    # Pond5 specific cleaning
+    elif source and "pond5" in source.lower():
+        # Take ID before first hyphen
+        # Pattern: 236704593-water-mosquitos-sliding-and-ju
+        if "-" in cleaned_id:
+            cleaned_id = cleaned_id.split("-")[0]
+    
+    # Critical Past specific cleaning
+    elif source and ("critical" in source.lower() or "criticalpast" in source.lower()):
+        # Remove ---- and everything after
+        # Pattern: 65675076731----1080-24p-Screening
+        if "----" in cleaned_id:
+            cleaned_id = cleaned_id.split("----")[0]
+    
+    # LOC / Library of Congress specific cleaning
+    elif source and ("loc" in source.lower() or "library of congress" in source.lower()):
+        # Extract from service-mbrs-ntscrm-[ID]-[ID] pattern
+        # Pattern: service-mbrs-ntscrm-00060780-00060780
+        if "service-mbrs-ntscrm-" in cleaned_id.lower():
+            parts = cleaned_id.split("-")
+            if len(parts) >= 4:
+                # Reconstruct as mbrs-ntscrm.[ID] for LOC format
+                cleaned_id = f"mbrs-ntscrm.{parts[3]}"
+    
     return cleaned_id
 
 def validate_url_format(url):

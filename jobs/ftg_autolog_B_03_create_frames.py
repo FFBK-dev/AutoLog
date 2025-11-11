@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-LF AutoLog Step 5: Create Frame Records from Gemini Response
+Footage AutoLog B Step 3: Create Frame Records from Gemini Response
 - Parses Gemini JSON response
 - Creates FRAMES records with captions pre-populated
 - Uploads cached thumbnails
 - Sets status to "3 - Caption Generated"
 - Updates parent FOOTAGE record with global metadata
+- Supports both LF (Library Footage) and AF (Archival Footage)
 """
 
 import sys
@@ -30,6 +31,7 @@ FIELD_MAPPING = {
     "location": "INFO_Location",
     "audio_type": "INFO_AudioType",
     "tags_list": "TAGS_List",
+    "primary_bin": "INFO_PrimaryBin",
     "video_events": "INFO_Video_Events",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_status": "FRAMES_Status",
@@ -150,8 +152,8 @@ if __name__ == "__main__":
         record_id = config.find_record_id(token, "FOOTAGE", {FIELD_MAPPING["footage_id"]: f"=={footage_id}"})
         footage_data = config.get_record(token, "FOOTAGE", record_id)
         
-        # Load Gemini result from step 4
-        output_dir = f"/private/tmp/lf_autolog_{footage_id}"
+        # Load Gemini result from step 2 (supports both LF and AF prefixes)
+        output_dir = f"/private/tmp/ftg_autolog_{footage_id}"
         gemini_result_path = os.path.join(output_dir, "gemini_result.json")
         
         if not os.path.exists(gemini_result_path):
@@ -203,6 +205,7 @@ if __name__ == "__main__":
         
         # Format tags
         tags_str = ", ".join(global_data['tags']) if global_data['tags'] else ""
+        primary_tag = global_data.get('primary_tag', '')
         
         # Update fields
         field_data = {
@@ -211,6 +214,7 @@ if __name__ == "__main__":
             FIELD_MAPPING["location"]: global_data['location'] if global_data['location'] else "",
             FIELD_MAPPING["audio_type"]: global_data['audio_type'],
             FIELD_MAPPING["tags_list"]: tags_str,
+            FIELD_MAPPING["primary_bin"]: primary_tag,
             FIELD_MAPPING["video_events"]: video_events_csv
         }
         
@@ -228,6 +232,7 @@ if __name__ == "__main__":
             print(f"     Location: {global_data['location'] if global_data['location'] else 'Not specified'}")
             print(f"     Audio: {global_data['audio_type']}")
             print(f"     Tags: {tags_str if tags_str else 'None'}")
+            print(f"     Primary Tag: {primary_tag if primary_tag else 'None'}")
         else:
             print(f"  -> ❌ Failed to update parent record: {update_response.status_code}")
             raise RuntimeError("Failed to update parent FOOTAGE record")

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-LF AutoLog Step 3: Assess and Sample Frames
+Footage AutoLog B Step 1: Assess and Sample Frames
 - Detects audio and kicks off background transcription (non-blocking)
 - Performs intelligent frame sampling with scene detection
 - Tracks timecodes for all sampled frames
 - Saves metadata for Gemini analysis
+- Supports both LF (Library Footage) and AF (Archival Footage)
 """
 
 import sys
@@ -72,8 +73,8 @@ if __name__ == "__main__":
         print(f"  -> Duration: {duration:.2f}s")
         print(f"  -> Framerate: {framerate:.2f} fps")
         
-        # Setup output directory for this footage
-        output_dir = f"/private/tmp/lf_autolog_{footage_id}"
+        # Setup output directory for this footage (supports both LF and AF prefixes)
+        output_dir = f"/private/tmp/ftg_autolog_{footage_id}"
         os.makedirs(output_dir, exist_ok=True)
         print(f"  -> Output directory: {output_dir}")
         

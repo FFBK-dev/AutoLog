@@ -12,6 +12,7 @@ This API server provides:
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Body, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import logging
 import warnings
 import subprocess
@@ -35,10 +36,122 @@ sys.path.append(str(Path(__file__).resolve().parent))
 
 import config
 
-# Initialize the FastAPI app with increased payload limits
+# Modern FastAPI lifespan management (prevents shutdown race conditions)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager for startup and shutdown tasks."""
+    # Startup
+    logging.info("🚀 Starting FileMaker Automation API")
+    
+    # Mount required network volumes at startup
+    logging.info("🔧 Mounting network volumes...")
+    
+    try:
+        # Mount footage volume
+        if config.mount_volume("footage"):
+            logging.info("✅ Footage volume mounted successfully")
+        else:
+            logging.warning("⚠️ Failed to mount footage volume")
+        
+        # Mount stills volume  
+        if config.mount_volume("stills"):
+            logging.info("✅ Stills volume mounted successfully")
+        else:
+            logging.warning("⚠️ Failed to mount stills volume")
+        
+        # Mount project volume (for bin scanning)
+        if config.mount_volume("project"):
+            logging.info("✅ Project volume mounted successfully")
+        else:
+            logging.warning("⚠️ Failed to mount project volume")
+            
+    except Exception as e:
+        logging.error(f"❌ Error during volume mounting: {e}")
+    
+    # Start Footage AutoLog Part B (AI) Workers
+    logging.info("🤖 Starting Footage AutoLog Part B workers...")
+    try:
+        worker_script = Path(__file__).resolve().parent / "workers" / "start_ftg_autolog_B_workers.sh"
+        result = subprocess.run(
+            [str(worker_script), "start"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            logging.info("✅ Footage AutoLog Part B workers started (11 workers)")
+        else:
+            logging.warning(f"⚠️ Failed to start workers: {result.stderr[:200]}")
+    except Exception as e:
+        logging.error(f"❌ Error starting workers: {e}")
+    
+    logging.info("⚠️ Using direct OpenAI API calls")
+    
+    # Yield control back to the application
+    yield
+    
+    # Shutdown
+    logging.info("🔄 Shutting down FileMaker Automation API")
+    
+    # Stop Footage AutoLog Part B (AI) Workers
+    logging.info("🛑 Stopping Footage AutoLog Part B workers...")
+    try:
+        worker_script = Path(__file__).resolve().parent / "workers" / "start_ftg_autolog_B_workers.sh"
+        result = subprocess.run(
+            [str(worker_script), "stop"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0:
+            logging.info("✅ Footage AutoLog Part B workers stopped gracefully")
+        else:
+            logging.warning(f"⚠️ Worker shutdown had issues: {result.stderr[:200]}")
+    except Exception as e:
+        logging.error(f"❌ Error stopping workers: {e}")
+    
+    # Clear RQ queues on shutdown (since workers are stopped)
+    # This prevents stale jobs from persisting across API restarts
+    logging.info("🧹 Clearing RQ queues...")
+    try:
+        from jobs.ftg_autolog_B_queue_jobs import q_step1, q_step2, q_step3, q_step4
+        
+        total_cleared = 0
+        for queue, name in [
+            (q_step1, "Step 1"),
+            (q_step2, "Step 2"),
+            (q_step3, "Step 3"),
+            (q_step4, "Step 4")
+        ]:
+            count = len(queue)
+            if count > 0:
+                queue.empty()
+                total_cleared += count
+                logging.info(f"  ✅ Cleared {name}: {count} items")
+            
+            # Also clear failed registries
+            try:
+                failed_count = queue.failed_job_registry.count
+                if failed_count > 0:
+                    queue.failed_job_registry.empty()
+                    logging.info(f"  ✅ Cleared {name} failed: {failed_count} items")
+            except:
+                pass
+        
+        if total_cleared > 0:
+            logging.info(f"✅ Queue cleanup complete: {total_cleared} items cleared")
+        else:
+            logging.info("✅ Queue cleanup complete: queues were empty")
+    except Exception as e:
+        logging.error(f"❌ Error clearing queues: {e}")
+
+# Initialize the FastAPI app with lifespan management
 app = FastAPI(
     title="FileMaker Automation API", 
     version="2.0.0",
+    lifespan=lifespan,
     # Set generous limits for metadata export operations
     # This handles large batch exports from Avid panel
     docs_url="/docs",
@@ -138,107 +251,6 @@ def check_key(x_api_key: str = Header(None)):
     if x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
-
-@app.on_event("startup")
-async def startup_event():
-    logging.info("🚀 Starting FileMaker Automation API")
-    
-    # Mount required network volumes at startup
-    logging.info("🔧 Mounting network volumes...")
-    
-    try:
-        # Mount footage volume
-        if config.mount_volume("footage"):
-            logging.info("✅ Footage volume mounted successfully")
-        else:
-            logging.warning("⚠️ Failed to mount footage volume")
-        
-        # Mount stills volume  
-        if config.mount_volume("stills"):
-            logging.info("✅ Stills volume mounted successfully")
-        else:
-            logging.warning("⚠️ Failed to mount stills volume")
-            
-    except Exception as e:
-        logging.error(f"❌ Error during volume mounting: {e}")
-    
-    # Start Footage AutoLog Part B (AI) Workers
-    logging.info("🤖 Starting Footage AutoLog Part B workers...")
-    try:
-        worker_script = Path(__file__).resolve().parent / "workers" / "start_ftg_autolog_B_workers.sh"
-        result = subprocess.run(
-            [str(worker_script), "start"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode == 0:
-            logging.info("✅ Footage AutoLog Part B workers started (11 workers)")
-        else:
-            logging.warning(f"⚠️ Failed to start workers: {result.stderr[:200]}")
-    except Exception as e:
-        logging.error(f"❌ Error starting workers: {e}")
-    
-    # Set up any startup tasks here
-    logging.info("⚠️ Using direct OpenAI API calls")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logging.info("🔄 Shutting down FileMaker Automation API")
-    
-    # Stop Footage AutoLog Part B (AI) Workers
-    logging.info("🛑 Stopping Footage AutoLog Part B workers...")
-    try:
-        worker_script = Path(__file__).resolve().parent / "workers" / "start_ftg_autolog_B_workers.sh"
-        result = subprocess.run(
-            [str(worker_script), "stop"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            logging.info("✅ Footage AutoLog Part B workers stopped gracefully")
-        else:
-            logging.warning(f"⚠️ Worker shutdown had issues: {result.stderr[:200]}")
-    except Exception as e:
-        logging.error(f"❌ Error stopping workers: {e}")
-    
-    # Clear RQ queues on shutdown (since workers are stopped)
-    # This prevents stale jobs from persisting across API restarts
-    logging.info("🧹 Clearing RQ queues...")
-    try:
-        from jobs.ftg_autolog_B_queue_jobs import q_step1, q_step2, q_step3, q_step4
-        
-        total_cleared = 0
-        for queue, name in [
-            (q_step1, "Step 1"),
-            (q_step2, "Step 2"),
-            (q_step3, "Step 3"),
-            (q_step4, "Step 4")
-        ]:
-            count = len(queue)
-            if count > 0:
-                queue.empty()
-                total_cleared += count
-                logging.info(f"  ✅ Cleared {name}: {count} items")
-            
-            # Also clear failed registries
-            try:
-                failed_count = queue.failed_job_registry.count
-                if failed_count > 0:
-                    queue.failed_job_registry.empty()
-                    logging.info(f"  ✅ Cleared {name} failed: {failed_count} items")
-            except:
-                pass
-        
-        if total_cleared > 0:
-            logging.info(f"✅ Queue cleanup complete: {total_cleared} items cleared")
-        else:
-            logging.info("✅ Queue cleanup complete: queues were empty")
-    except Exception as e:
-        logging.error(f"❌ Error clearing queues: {e}")
 
 # Helper function for synchronous metadata processing
 def execute_metadata_query_sync(payload: dict):
@@ -1938,6 +1950,82 @@ def run_ris_preprocess(background_tasks: BackgroundTasks, payload: dict = Body({
         "status": "running",
         "message": f"Preprocessing {'all unprocessed records' if record_id == 'all' else f'record {record_id}'}"
     }
+
+@app.post("/scan/bins", dependencies=[Depends(check_key)])
+def scan_bins(background_tasks: BackgroundTasks, force_refresh: bool = False):
+    """
+    Scan Avid project directories for .avb bin files.
+    
+    Discovers bins from:
+    - Stills: /Volumes/PROJECT_E2E/E2E/5. STILLS/5b. BY CATEGORY
+    - Archival Footage: /Volumes/PROJECT_E2E/E2E/6. ARC FOOTAGE/6b. BY CATEGORY
+    - Live Footage: /Volumes/PROJECT_E2E/E2E/7. LIVE FOOTAGE/7b. BY CATEGORY + 7c. BY LOCATION
+    
+    Generates bin lists in tags/ folder for use in tagging workflows.
+    """
+    from utils.bin_scanner import scan_all_bins
+    
+    def run_bin_scan():
+        """Run bin scan with job tracking."""
+        try:
+            logging.info("🔍 Starting bin scan...")
+            results = scan_all_bins()
+            
+            # Log results
+            for media_type, result in results.items():
+                if result.get("success"):
+                    logging.info(f"✅ {media_type}: {result['bin_count']} bins")
+                else:
+                    logging.error(f"❌ {media_type}: {result.get('error', 'Unknown error')}")
+            
+            logging.info("✅ Bin scan complete")
+            
+        except Exception as e:
+            logging.error(f"❌ Bin scan error: {e}")
+    
+    # Submit job for tracking
+    job_id = job_tracker.submit_job("bin_scan", [f"force_refresh={force_refresh}"])
+    
+    # Run in background
+    background_tasks.add_task(run_bin_scan)
+    
+    return {
+        "job_id": job_id,
+        "job_name": "bin_scan",
+        "submitted": True,
+        "status": "running",
+        "message": "Bin scan started - scanning PROJECT_E2E for .avb files"
+    }
+
+@app.get("/scan/bins/status")
+def get_bins_status():
+    """
+    Get status of bin files (last scan time, bin counts).
+    
+    Returns information about each media type's bin file.
+    """
+    try:
+        from utils.bin_scanner import get_scan_status
+        
+        status = get_scan_status()
+        
+        # Calculate totals
+        total_bins = sum(
+            s.get("bin_count", 0) 
+            for s in status.values() 
+            if s.get("exists") and "error" not in s
+        )
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "total_bins": total_bins,
+            "media_types": status
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to get bin status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health_check():

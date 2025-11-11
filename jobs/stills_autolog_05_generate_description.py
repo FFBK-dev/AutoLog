@@ -30,6 +30,7 @@ FIELD_MAPPING = {
     "description": "INFO_Description",
     "date": "INFO_Date",
     "tags_list": "TAGS_List",
+    "primary_bin": "INFO_PrimaryBin",
     "server_path": "SPECS_Filepath_Server",
     "status": "AutoLog_Status",
     "reviewed_checkbox": "INFO_Reviewed_Checkbox",
@@ -408,6 +409,11 @@ def process_single_item(stills_id, token, continue_workflow=False):
         
         # Extract tags from response
         returned_tags = content.get("tags") or content.get("Tags", [])
+        
+        # Ensure returned_tags is a list (sometimes API returns string by mistake)
+        if isinstance(returned_tags, str):
+            returned_tags = [returned_tags]
+        
         if returned_tags:
             print(f"🏷️  TAGS RETURNED: {', '.join(returned_tags)}")
             print(f"🏷️  TOTAL TAG COUNT: {len(returned_tags)}")
@@ -417,10 +423,18 @@ def process_single_item(stills_id, token, continue_workflow=False):
             print(f"⚠️  No tags returned in response")
             tags_for_fm = ""
         
+        # Extract primary tag from response
+        primary_tag = content.get("primary_tag") or content.get("Primary_tag", "")
+        if primary_tag:
+            print(f"⭐ PRIMARY TAG: {primary_tag}")
+        else:
+            print(f"⚠️  No primary tag returned in response")
+        
         update_data = {
             FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
             FIELD_MAPPING["date"]: content.get("date") or content.get("Date", ""),
-            FIELD_MAPPING["tags_list"]: tags_for_fm
+            FIELD_MAPPING["tags_list"]: tags_for_fm,
+            FIELD_MAPPING["primary_bin"]: primary_tag
         }
         
         print(f"DEBUG: Update data: {update_data}")

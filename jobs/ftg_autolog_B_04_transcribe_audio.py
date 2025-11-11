@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-LF AutoLog Step 6: Audio Transcription Mapping (Optional)
-- Checks if transcription completed from Step 3
+Footage AutoLog B Step 4: Audio Transcription Mapping (Optional)
+- Checks if transcription completed from Step 1
 - Maps transcript segments to frame records
 - Updates frame records with audio transcripts
-- Only runs if audio was detected in Step 3
+- Only runs if audio was detected in Step 1
+- Supports both LF (Library Footage) and AF (Archival Footage)
 """
 
 import sys
@@ -74,8 +75,8 @@ if __name__ == "__main__":
     try:
         print(f"=== Audio Transcription Mapping for {footage_id} ===")
         
-        # Load assessment data
-        output_dir = f"/private/tmp/lf_autolog_{footage_id}"
+        # Load assessment data (supports both LF and AF prefixes)
+        output_dir = f"/private/tmp/ftg_autolog_{footage_id}"
         assessment_path = os.path.join(output_dir, "assessment.json")
         
         if not os.path.exists(assessment_path):
