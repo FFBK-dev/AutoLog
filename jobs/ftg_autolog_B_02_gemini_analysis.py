@@ -58,8 +58,39 @@ def load_tags():
         print(f"  -> WARNING: Failed to load footage tags: {e}")
         return []
 
+def load_bins(footage_id):
+    """Load approved bins list based on footage ID prefix."""
+    # Determine which bins file to use based on footage ID
+    if footage_id.startswith("AF"):
+        bins_filename = "archival-footage-bins.txt"
+        media_type = "archival footage"
+    elif footage_id.startswith("LF"):
+        bins_filename = "live-footage-bins.txt"
+        media_type = "live footage"
+    else:
+        print(f"  -> WARNING: Unknown footage ID prefix for {footage_id}, defaulting to live footage bins")
+        bins_filename = "live-footage-bins.txt"
+        media_type = "live footage (default)"
+    
+    bins_path = Path(__file__).resolve().parent.parent / "tags" / bins_filename
+    try:
+        with open(bins_path, 'r') as f:
+            bins = []
+            for line in f.readlines():
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    parts = line.split('\t')
+                    bin_name = parts[0].strip()
+                    bins.append(bin_name)
+        print(f"  -> Loaded {len(bins)} approved bins for {media_type}")
+        return bins
+    except Exception as e:
+        print(f"  -> WARNING: Failed to load bins file ({bins_filename}): {e}")
+        return []
 
-def build_gemini_prompt(footage_data, frames_metadata, tags):
+
+def build_gemini_prompt(footage_data, frames_metadata, tags, bins):
     """Build structured prompt for Gemini with all context."""
     
     footage_id = footage_data.get(FIELD_MAPPING["footage_id"], "")
@@ -76,6 +107,10 @@ def build_gemini_prompt(footage_data, frames_metadata, tags):
         else:
             tags_list_items.append(f"- {tag['name']}")
     tags_list_text = "\n".join(tags_list_items)
+    
+    # Format bins list
+    bins_list_items = [f"- {bin_name}" for bin_name in bins]
+    bins_list_text = "\n".join(bins_list_items)
     
     # Build frame list with timecodes
     frame_list = []
@@ -129,8 +164,22 @@ Analyze how the view changes between frames to detect:
 - gimbal: Smooth stabilized movement
 - unknown: Cannot determine from available frames
 
-APPROVED TAGS (select up to 4 most relevant):
+APPROVED TAGS - Select tags for visually significant elements:
 {tags_list_text}
+
+CRITICAL TAG SELECTION RULES:
+- ONLY tag elements that are PROMINENT, CENTRAL, or VISUALLY SIGNIFICANT in the footage
+- An element must play a meaningful role in the composition or narrative
+- DO NOT tag background elements, incidental details, or barely visible items
+- Select as many tags as appropriate based on visual prominence (no arbitrary limits)
+
+APPROVED BINS - Select ONE primary bin for Avid organization:
+{bins_list_text}
+
+CRITICAL BIN SELECTION RULE:
+- Choose ONE SINGLE bin from the APPROVED BINS LIST above
+- Select the bin that is MOST representative of this footage for Avid organization
+- Do not invent bin names - ONLY use bins from the provided list
 
 Return your analysis as strict JSON with this exact structure:
 {{
@@ -142,8 +191,8 @@ Return your analysis as strict JSON with this exact structure:
     "location": "Proper noun location name from context (e.g. 'Myrtle Grove Plantation', 'Independence Hall', 'Golden Gate Bridge'). Use the FULL proper noun name if provided in context. Empty string if no specific location name in context.",
     "audio_type": "Sound or MOS (will be determined from audio detection)",
     "camera_summary": ["List of camera movements detected across the sequence"],
-    "tags": ["Select up to 4 most relevant tags from approved list"],
-    "primary_tag": "REQUIRED - Select ONE SINGLE tag from your tags array above that is MOST representative of this footage"
+    "tags": ["Select all visually prominent tags from approved tags list"],
+    "primary_bin": "REQUIRED - Select ONE SINGLE bin from the approved bins list that is MOST representative of this footage"
   }},
   "frames": [
     {{
@@ -227,9 +276,12 @@ if __name__ == "__main__":
         # Load tags
         tags = load_tags()
         
+        # Load bins (based on footage ID prefix)
+        bins = load_bins(footage_id)
+        
         # Build prompt
         print(f"\n📝 Building Gemini prompt...")
-        prompt = build_gemini_prompt(footage_data, assessment_data['frames'], tags)
+        prompt = build_gemini_prompt(footage_data, assessment_data['frames'], tags, bins)
         
         # Log prompt to DevConsole for visibility
         print(f"  -> Logging prompt to AI_DevConsole...")
@@ -267,9 +319,9 @@ if __name__ == "__main__":
                             "type": "array",
                             "items": {"type": "string"}
                         },
-                        "primary_tag": {"type": "string"}
+                        "primary_bin": {"type": "string"}
                     },
-                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags", "primary_tag"]
+                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags", "primary_bin"]
                 },
                 "frames": {
                     "type": "array",
@@ -338,7 +390,7 @@ if __name__ == "__main__":
         print(f"  Location: {gemini_result['global']['location']}")
         print(f"  Audio Type: {gemini_result['global']['audio_type']}")
         print(f"  Tags: {', '.join(gemini_result['global']['tags'])}")
-        print(f"  Primary Tag: {gemini_result['global'].get('primary_tag', 'None')}")
+        print(f"  Primary Bin: {gemini_result['global'].get('primary_bin', 'None')}")
         print(f"  Frames analyzed: {len(gemini_result['frames'])}")
         
         print(f"\n✅ Gemini analysis completed for {footage_id}")

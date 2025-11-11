@@ -99,6 +99,26 @@ def load_tags():
         print(f"  -> WARNING: Failed to load tags file: {e}")
         return []
 
+def load_bins():
+    """Load the approved bins list from the bins file."""
+    bins_path = Path(__file__).resolve().parent.parent / "tags" / "stills-bins.txt"
+    try:
+        with open(bins_path, 'r') as f:
+            bins = []
+            for line in f.readlines():
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    # Support both formats: just name, or name\tdescription
+                    parts = line.split('\t')
+                    bin_name = parts[0].strip()
+                    bins.append(bin_name)
+        print(f"  -> Loaded {len(bins)} approved bins")
+        return bins
+    except Exception as e:
+        print(f"  -> WARNING: Failed to load bins file: {e}")
+        return []
+
 def truncate_text_for_clip(text, max_chars=250):
     """Truncate text to fit CLIP token limits (roughly 77 tokens = ~250 chars safely)"""
     if not text:
@@ -377,12 +397,19 @@ def process_single_item(stills_id, token, continue_workflow=False):
                 tags_list_items.append(f"- {tag['name']}")
         tags_list_text = "\n".join(tags_list_items)
         
+        # Load approved bins list
+        bins = load_bins()
+        # Format bins for prompt
+        bins_list_items = [f"- {bin_name}" for bin_name in bins]
+        bins_list_text = "\n".join(bins_list_items)
+        
         # Format the prompt with dynamic fields
         prompt_text = prompt_template.format(
             AI_Prompt=user_prompt if user_prompt else "",
             INFO_Metadata=metadata_from_fm if metadata_from_fm else "",
             INFO_Description=existing_description if existing_description else "",
-            TAGS_LIST=tags_list_text
+            TAGS_LIST=tags_list_text,
+            BINS_LIST=bins_list_text
         )
 
         # Log the prompt to AI_DevConsole for prompt engineering visibility
@@ -423,18 +450,18 @@ def process_single_item(stills_id, token, continue_workflow=False):
             print(f"⚠️  No tags returned in response")
             tags_for_fm = ""
         
-        # Extract primary tag from response
-        primary_tag = content.get("primary_tag") or content.get("Primary_tag", "")
-        if primary_tag:
-            print(f"⭐ PRIMARY TAG: {primary_tag}")
+        # Extract primary bin from response
+        primary_bin = content.get("primary_bin") or content.get("Primary_bin", "")
+        if primary_bin:
+            print(f"🗂️  PRIMARY BIN: {primary_bin}")
         else:
-            print(f"⚠️  No primary tag returned in response")
+            print(f"⚠️  No primary bin returned in response")
         
         update_data = {
             FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
             FIELD_MAPPING["date"]: content.get("date") or content.get("Date", ""),
             FIELD_MAPPING["tags_list"]: tags_for_fm,
-            FIELD_MAPPING["primary_bin"]: primary_tag
+            FIELD_MAPPING["primary_bin"]: primary_bin
         }
         
         print(f"DEBUG: Update data: {update_data}")

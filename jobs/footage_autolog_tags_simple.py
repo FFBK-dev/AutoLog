@@ -50,6 +50,38 @@ def load_tags():
         print(f"  -> ERROR: Failed to load footage tags file: {e}")
         return []
 
+def load_bins(footage_id):
+    """Load the approved bins list from the bins file based on footage ID prefix."""
+    # Determine which bins file to use based on footage ID
+    if footage_id.startswith("AF"):
+        bins_filename = "archival-footage-bins.txt"
+        media_type = "archival footage"
+    elif footage_id.startswith("LF"):
+        bins_filename = "live-footage-bins.txt"
+        media_type = "live footage"
+    else:
+        print(f"  -> WARNING: Unknown footage ID prefix for {footage_id}, defaulting to live footage bins")
+        bins_filename = "live-footage-bins.txt"
+        media_type = "live footage (default)"
+    
+    bins_path = Path(__file__).resolve().parent.parent / "tags" / bins_filename
+    try:
+        with open(bins_path, 'r') as f:
+            bins = []
+            for line in f.readlines():
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    # Support both formats: just name, or name\tdescription
+                    parts = line.split('\t')
+                    bin_name = parts[0].strip()
+                    bins.append(bin_name)
+        print(f"  -> Loaded {len(bins)} approved bins for {media_type}")
+        return bins
+    except Exception as e:
+        print(f"  -> WARNING: Failed to load bins file ({bins_filename}): {e}")
+        return []
+
 def setup_openai_client(token):
     """Set up global OpenAI client with API keys from system globals."""
     try:
@@ -104,8 +136,8 @@ def find_frames_for_footage(token, footage_id):
         print(f"  -> ERROR: Failed to find frame records: {e}")
         return []
 
-def generate_tags_from_frames(client, frames_data, tags):
-    """Generate tags based on frame captions and transcripts."""
+def generate_tags_from_frames(client, frames_data, tags, bins):
+    """Generate tags and primary bin based on frame captions and transcripts."""
     try:
         print(f"  -> Analyzing {len(frames_data)} frames for tagging...")
         
@@ -140,18 +172,25 @@ def generate_tags_from_frames(client, frames_data, tags):
                 tags_list_items.append(f"- {tag['name']}")
         tags_list_text = "\n".join(tags_list_items)
         
+        # Format bins for prompt
+        bins_list_items = [f"- {bin_name}" for bin_name in bins]
+        bins_list_text = "\n".join(bins_list_items)
+        
         # Create prompt for tagging
         prompt_text = f"""You are an expert at analyzing video footage and assigning appropriate tags.
 
-Your task is to analyze the frame-by-frame content provided and select up to 4 most relevant tags from the approved list.
+Your task is to analyze the frame-by-frame content provided and select appropriate tags and primary bin.
 
-CRITICAL INSTRUCTIONS:
-1. Do not invent new tags - ONLY use tags from the provided list
+CRITICAL INSTRUCTIONS FOR TAGS:
+1. Do not invent new tags - ONLY use tags from the provided APPROVED TAGS LIST
 2. Choose tags based on what you observe in the frame content (visual descriptions and audio transcripts)
-3. Select NO MORE than 4 tags that best match the footage content
-4. If fewer than 4 tags are appropriate, return fewer tags
-5. Focus on the most prominent and consistent elements across the frames
-6. After selecting your tags, choose ONE SINGLE tag from your selected tags that is MOST representative of the footage - this will be the primary tag
+3. Select as many relevant tags as appropriate (no arbitrary limit for footage)
+4. Focus on the most prominent and consistent elements across the frames
+
+CRITICAL INSTRUCTIONS FOR PRIMARY BIN:
+1. Choose ONE SINGLE bin from the APPROVED BINS LIST below
+2. Select the bin that is MOST representative of this footage for Avid organization
+3. Do not invent bin names - ONLY use bins from the provided list
 
 FRAME-BY-FRAME CONTENT:
 {frame_content}
@@ -159,9 +198,12 @@ FRAME-BY-FRAME CONTENT:
 APPROVED TAGS LIST:
 {tags_list_text}
 
+APPROVED BINS LIST:
+{bins_list_text}
+
 Return your answer as a JSON object with exactly TWO fields:
-- `tags`: [Array of exact tag names from the approved list. Select up to 4 most relevant tags. Format as: ["tag1", "tag2", "tag3", "tag4"] or fewer if appropriate.]
-- `primary_tag`: [REQUIRED - Single most representative tag selected from your tags array above]"""
+- `tags`: [Array of exact tag names from the approved tags list. Select all relevant tags.]
+- `primary_bin`: [REQUIRED - Single bin name from the approved bins list that is MOST representative of this footage]"""
 
         # Make OpenAI API call
         print(f"  -> Calling OpenAI API for tag generation...")
@@ -179,7 +221,7 @@ Return your answer as a JSON object with exactly TWO fields:
         try:
             data = json.loads(response_text)
             returned_tags = data.get('tags', [])
-            primary_tag = data.get('primary_tag', '')
+            primary_bin = data.get('primary_bin', '')
             
             # Ensure tags is a list
             if isinstance(returned_tags, str):
@@ -190,12 +232,12 @@ Return your answer as a JSON object with exactly TWO fields:
             print(f"🏷️  TAGS RETURNED: {', '.join(returned_tags) if returned_tags else 'None'}")
             print(f"🏷️  TOTAL TAG COUNT: {len(returned_tags)}")
             
-            if primary_tag:
-                print(f"⭐ PRIMARY TAG: {primary_tag}")
+            if primary_bin:
+                print(f"🗂️  PRIMARY BIN: {primary_bin}")
             else:
-                print(f"⚠️  No primary tag returned")
+                print(f"⚠️  No primary bin returned")
             
-            return {'tags': returned_tags, 'primary_tag': primary_tag}
+            return {'tags': returned_tags, 'primary_bin': primary_bin}
             
         except json.JSONDecodeError as e:
             print(f"  -> ERROR: Failed to parse JSON response: {e}")
@@ -239,17 +281,24 @@ if __name__ == "__main__":
             print(f"❌ No tags loaded - cannot proceed")
             sys.exit(1)
         
+        # Load approved bins (based on footage ID prefix)
+        bins = load_bins(footage_id)
+        
+        if not bins:
+            print(f"❌ No bins loaded - cannot proceed")
+            sys.exit(1)
+        
         # Set up OpenAI client
         client = setup_openai_client(token)
         
-        # Generate tags
-        result = generate_tags_from_frames(client, frames_data, tags)
+        # Generate tags and bin
+        result = generate_tags_from_frames(client, frames_data, tags, bins)
         
         if not result or not result.get('tags'):
             print(f"⚠️ No tags were generated")
             # Still update with empty strings to clear any existing tags
             tags_for_fm = ""
-            primary_tag = ""
+            primary_bin = ""
         else:
             # Format tags for FileMaker (comma-separated)
             # Ensure tags is a list (sometimes API returns string by mistake)
@@ -257,12 +306,12 @@ if __name__ == "__main__":
             if isinstance(tags, str):
                 tags = [tags]
             tags_for_fm = ", ".join(tags)
-            primary_tag = result.get('primary_tag', '')
+            primary_bin = result.get('primary_bin', '')
         
         # Update TAGS_List and INFO_PrimaryBin fields
         field_data = {
             FIELD_MAPPING["tags_list"]: tags_for_fm,
-            FIELD_MAPPING["primary_bin"]: primary_tag
+            FIELD_MAPPING["primary_bin"]: primary_bin
         }
         
         update_response = config.update_record(token, "FOOTAGE", record_id, field_data)
@@ -270,8 +319,8 @@ if __name__ == "__main__":
         if update_response.status_code == 200:
             print(f"✅ Successfully updated tags for footage {footage_id}")
             print(f"  -> Tags: {tags_for_fm if tags_for_fm else 'None'}")
-            if primary_tag:
-                print(f"  -> Primary Tag: {primary_tag}")
+            if primary_bin:
+                print(f"  -> Primary Bin: {primary_bin}")
             sys.exit(0)
         else:
             print(f"❌ Failed to update footage record: {update_response.status_code}")
