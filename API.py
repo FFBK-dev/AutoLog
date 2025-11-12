@@ -107,11 +107,48 @@ async def lifespan(app: FastAPI):
     
     logging.info("⚠️ Using direct OpenAI API calls")
     
+    # Start Unified Dashboard
+    logging.info("📊 Starting Unified API Monitoring Dashboard...")
+    dashboard_process = None
+    try:
+        dashboard_script = Path(__file__).resolve().parent / "dashboard" / "api_dashboard.py"
+        dashboard_process = subprocess.Popen(
+            ["python3", str(dashboard_script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Give it a moment to start
+        import asyncio
+        await asyncio.sleep(2)
+        
+        if dashboard_process.poll() is None:  # Still running
+            logging.info("✅ Dashboard started successfully on http://localhost:9181")
+        else:
+            logging.warning("⚠️ Dashboard failed to start")
+    except Exception as e:
+        logging.error(f"❌ Error starting dashboard: {e}")
+    
     # Yield control back to the application
     yield
     
     # Shutdown
     logging.info("🔄 Shutting down FileMaker Automation API")
+    
+    # Stop Dashboard
+    if dashboard_process and dashboard_process.poll() is None:
+        logging.info("📊 Stopping dashboard...")
+        try:
+            dashboard_process.terminate()
+            dashboard_process.wait(timeout=5)
+            logging.info("✅ Dashboard stopped gracefully")
+        except Exception as e:
+            logging.warning(f"⚠️ Dashboard shutdown had issues: {e}")
+            try:
+                dashboard_process.kill()
+            except:
+                pass
     
     # Stop Footage AutoLog Part B (AI) Workers
     logging.info("🛑 Stopping Footage AutoLog Part B workers...")
@@ -2090,13 +2127,211 @@ def cleanup_sessions():
         logging.error(f"❌ Error cleaning up sessions: {e}")
         raise HTTPException(status_code=500, detail=f"Session cleanup error: {str(e)}")
 
+@app.get("/dashboard/data")
+def get_dashboard_data(request: Request):
+    """
+    Unified dashboard data endpoint.
+    
+    Provides comprehensive monitoring data for all API jobs and Redis queues.
+    Used by the dashboard UI for real-time monitoring.
+    
+    Note: This endpoint is called frequently by the dashboard but logging is suppressed
+    to keep console output clean.
+    """
+    import re
+    
+    def detect_media_type(job_name: str) -> str:
+        """Detect media type from job name."""
+        job_lower = job_name.lower()
+        
+        if 'stills_autolog' in job_lower or 'stills' in job_lower:
+            return 'stills'
+        elif any(x in job_lower for x in ['_autolog_a', '_autolog_b', 'lf_', 'footage_', 'ftg_']):
+            return 'footage'
+        elif 'music_autolog' in job_lower or 'music' in job_lower:
+            return 'music'
+        elif 'metadata-' in job_lower or 'metadata_' in job_lower or 'avid-' in job_lower or 'ris_' in job_lower:
+            return 'avid'
+        elif 'bin_scan' in job_lower:
+            return 'system'
+        else:
+            return 'other'
+    
+    def extract_filemaker_id(args: list) -> str:
+        """Extract FileMaker ID from job arguments."""
+        if not args or len(args) == 0:
+            return None
+        
+        # Get first argument
+        first_arg = str(args[0])
+        
+        # Try to extract known ID patterns
+        patterns = [
+            (r'S\d+', 'Stills'),
+            (r'LF\d+', 'Live Footage'),
+            (r'AF\d+', 'Archival Footage'),
+            (r'MX\d+', 'Music'),
+            (r'FTG\d+', 'Footage')
+        ]
+        
+        for pattern, _ in patterns:
+            match = re.search(pattern, first_arg)
+            if match:
+                return match.group(0)
+        
+        # If it looks like an ID but doesn't match patterns, return it anyway
+        if len(first_arg) < 20 and not first_arg.startswith('/'):
+            return first_arg
+        
+        return None
+    
+    def get_redis_queue_data():
+        """Get Redis queue data for Footage AutoLog Part B."""
+        try:
+            from jobs.ftg_autolog_B_queue_jobs import q_step1, q_step2, q_step3, q_step4
+            from rq.registry import StartedJobRegistry
+            from rq.job import Job
+            
+            def get_queue_items(queue, max_items=10):
+                """Get queued and processing items from a queue."""
+                queued_items = []
+                processing_items = []
+                
+                # Get queued items
+                for job in queue.jobs[:max_items]:
+                    try:
+                        if hasattr(job, 'args') and len(job.args) > 0:
+                            footage_id = str(job.args[0])
+                            queued_items.append(footage_id)
+                    except:
+                        pass
+                
+                # Get processing items
+                try:
+                    started_registry = StartedJobRegistry(queue=queue)
+                    job_ids = started_registry.get_job_ids()
+                    
+                    for job_id in job_ids[:5]:  # Max 5 processing
+                        try:
+                            job = Job.fetch(job_id, connection=queue.connection)
+                            if hasattr(job, 'args') and len(job.args) > 0:
+                                footage_id = str(job.args[0])
+                                processing_items.append(footage_id)
+                        except:
+                            pass
+                except:
+                    pass
+                
+                return queued_items, processing_items
+            
+            queues_data = {}
+            total_queued = 0
+            total_processing = 0
+            
+            for queue, step_name in [
+                (q_step1, 'step1_assess'),
+                (q_step2, 'step2_gemini'),
+                (q_step3, 'step3_frames'),
+                (q_step4, 'step4_audio')
+            ]:
+                queued, processing = get_queue_items(queue)
+                queues_data[step_name] = {
+                    'queued': len(queue),
+                    'processing': len(processing),
+                    'queued_items': queued,
+                    'processing_items': processing
+                }
+                total_queued += len(queue)
+                total_processing += len(processing)
+            
+            return queues_data, total_queued, total_processing
+            
+        except Exception as e:
+            logging.warning(f"⚠️ Could not get Redis queue data: {e}")
+            return {}, 0, 0
+    
+    try:
+        # Get JobTracker stats
+        stats = job_tracker.get_stats()
+        
+        # Process API jobs with enhanced data
+        api_jobs = []
+        with job_tracker.lock:
+            for job_id, job_data in job_tracker.current_jobs.items():
+                job_name = job_data.get('job_name', '')
+                args = job_data.get('args', [])
+                status = job_data.get('status', 'unknown')
+                submitted_at = job_data.get('submitted_at')
+                completed_at = job_data.get('completed_at')
+                
+                # Calculate duration
+                duration = None
+                if completed_at and submitted_at:
+                    duration = (completed_at - submitted_at).total_seconds()
+                elif submitted_at and status == 'running':
+                    duration = (datetime.now() - submitted_at).total_seconds()
+                
+                # Build enhanced job data
+                enhanced_job = {
+                    'job_id': job_id,
+                    'job_name': job_name,
+                    'media_type': detect_media_type(job_name),
+                    'filemaker_id': extract_filemaker_id(args),
+                    'status': status,
+                    'submitted_at': submitted_at.isoformat() if submitted_at else None,
+                    'completed_at': completed_at.isoformat() if completed_at else None,
+                    'duration_seconds': round(duration, 1) if duration else None
+                }
+                
+                api_jobs.append(enhanced_job)
+        
+        # Sort: running first, then by submission time (most recent first)
+        api_jobs.sort(key=lambda x: (
+            0 if x['status'] == 'running' else 1,
+            x['submitted_at'] if x['submitted_at'] else ''
+        ), reverse=True)
+        
+        # Get Redis queue data
+        redis_queues, total_queued, total_processing = get_redis_queue_data()
+        
+        # Count statuses
+        running_count = sum(1 for j in api_jobs if j['status'] == 'running')
+        failed_count = sum(1 for j in api_jobs if j['status'] == 'failed')
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'api_status': 'healthy',
+            'api_jobs': api_jobs[:100],  # Limit to last 100 jobs
+            'redis_queues': redis_queues,
+            'stats': {
+                'total_api_jobs': stats['total_submitted'],
+                'api_running': running_count,
+                'api_completed': stats['total_completed'],
+                'api_failed': failed_count,
+                'redis_queued': total_queued,
+                'redis_processing': total_processing
+            }
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Dashboard data error: {e}")
+        raise HTTPException(status_code=500, detail=f"Dashboard data error: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
+    
+    # Custom filter to suppress /dashboard/data endpoint logging (reduces console clutter)
+    class DashboardEndpointFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "/dashboard/data" not in record.getMessage()
+    
+    # Add filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(DashboardEndpointFilter())
     
     # Configure uvicorn for large payload handling (Avid metadata exports)
     uvicorn_config = {
         "host": "0.0.0.0",
-        "port": 8000,
+        "port": 8081,
         "limit_max_requests": 1000,
         "limit_concurrency": 1000,
         # Critical: Set large payload limits for metadata export

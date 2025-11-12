@@ -206,62 +206,53 @@ Bins are automatically scanned in two ways:
 ✅ Bin scan complete
 ```
 
-#### Option 2: Scheduled Task (Optional)
-For additional freshness between API restarts, create a daily cron job or launchd plist to scan bins:
+#### Option 2: LaunchAgent (Recommended)
+For production use, a macOS LaunchAgent provides reliable daily scanning:
 
-**Cron Example** (daily at 6 AM):
+- **Automatically configured and running**
+- Runs daily at 6:00 AM
+- Logs to `/tmp/bin-scan.log`
+- Survives system restarts
+
+See [LAUNCHAGENT_SETUP.md](LAUNCHAGENT_SETUP.md) for complete LaunchAgent documentation.
+
+**Quick Commands**:
 ```bash
-0 6 * * * curl -X POST http://localhost:8000/scan/bins \
-  -H "x-api-key: your_api_key_here"
+# Check status
+launchctl list | grep filemaker
+
+# Run manually
+launchctl start com.filemaker.binscanner
+
+# View logs
+cat /tmp/bin-scan.log
 ```
 
-**Launchd Example**:
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" 
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.filemaker.binscanner</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/curl</string>
-        <string>-X</string>
-        <string>POST</string>
-        <string>http://localhost:8000/scan/bins</string>
-        <string>-H</string>
-        <string>x-api-key: your_api_key_here</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>6</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-</dict>
-</plist>
+#### Option 3: Manual API Call
+For testing or one-off updates:
+```bash
+curl -X POST -H "X-API-Key: your_api_key_here" http://localhost:8081/scan/bins
 ```
 
 ### Manual Scanning
 
 Trigger a scan anytime:
 
-**Option 1: Command Line**
+**Option 1: LaunchAgent** (Recommended)
 ```bash
-python3 utils/bin_scanner.py
+# Trigger the LaunchAgent manually
+launchctl start com.filemaker.binscanner
 ```
 
 **Option 2: API Endpoint**
 ```bash
-curl -X POST http://localhost:8000/scan/bins
+curl -X POST -H "X-API-Key: your_api_key_here" http://localhost:8081/scan/bins
 ```
 
 **Option 3: Restart API**
 ```bash
 # Bins are automatically scanned on startup
-sudo systemctl restart filemaker-api  # or your restart method
+# Simply restart your API server
 ```
 
 ## Troubleshooting

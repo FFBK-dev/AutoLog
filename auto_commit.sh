@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Navigate to your repository
-cd /path/to/your/project
+cd /Users/admin/Documents/Github/Filemaker-Backend
 
 # Add all changes
 git add .
@@ -11,8 +11,8 @@ if ! git diff --staged --quiet; then
     # Create commit with timestamp
     git commit -m "Daily auto-commit: $(date '+%Y-%m-%d %H:%M:%S')"
     
-    # Optionally push to remote (uncomment if desired)
-    # git push origin main
+    # Push to remote
+    git push origin main
     
     echo "$(date): Auto-commit completed successfully" >> ~/auto_commit.log
 else
