@@ -328,7 +328,18 @@ def execute_metadata_query_sync(payload: dict):
         )
         
         if result.returncode == 0:
-            return json.loads(result.stdout)
+            response_data = json.loads(result.stdout)
+            
+            # DEBUG: Log response structure to diagnose PrimaryBin issue
+            if response_data.get('results') and len(response_data['results']) > 0:
+                first_result = response_data['results'][0]
+                logging.info(f"🔍 DEBUG - Query response keys for first result: {list(first_result.keys())}")
+                if 'info_primary_bin' in first_result:
+                    logging.info(f"✅ DEBUG - info_primary_bin in response: '{first_result.get('info_primary_bin')}'")
+                else:
+                    logging.warning(f"⚠️ DEBUG - info_primary_bin NOT in response")
+            
+            return response_data
         else:
             error_output = result.stderr if result.stderr else result.stdout
             try:
@@ -1853,6 +1864,17 @@ def metadata_bridge_export(request: Request, background_tasks: BackgroundTasks, 
         assets = payload.get('assets', [])
         logging.info(f"📋 Media type: {media_type}, assets count: {len(assets)}")
         
+        # DEBUG: Log first asset structure to diagnose PrimaryBin issue
+        if assets and len(assets) > 0:
+            first_asset = assets[0]
+            logging.info(f"🔍 DEBUG - First asset structure: {json.dumps(first_asset, indent=2)}")
+            if 'metadata' in first_asset:
+                logging.info(f"🔍 DEBUG - Metadata keys: {list(first_asset['metadata'].keys())}")
+                if 'primary_bin' in first_asset['metadata']:
+                    logging.info(f"✅ DEBUG - primary_bin found: '{first_asset['metadata']['primary_bin']}'")
+                else:
+                    logging.warning(f"⚠️ DEBUG - primary_bin NOT found in metadata")
+        
         # Validate payload
         if not media_type:
             logging.error(f"❌ Missing media_type in payload")
@@ -2007,6 +2029,32 @@ def run_ris_preprocess(background_tasks: BackgroundTasks, payload: dict = Body({
         "message": f"Preprocessing {'all unprocessed records' if record_id == 'all' else f'record {record_id}'}"
     }
 
+@app.post("/run/stills_reverse_search", dependencies=[Depends(check_key)])
+def run_stills_reverse_search(background_tasks: BackgroundTasks):
+    """
+    Generate thumbnails for REVERSE_IMAGE_SEARCH records with Imported status.
+    
+    Automatically finds all records with STATUS = "Imported" and generates
+    588x588 RGB thumbnails matching the Stills workflow preprocessing.
+    
+    No payload required - automatically discovers and processes all pending records.
+    """
+    cmd = [
+        "python3",
+        str(Path(__file__).resolve().parent / "jobs" / "stills_reverse_search.py")
+    ]
+    
+    job_id = job_tracker.submit_job("stills_reverse_search", [])
+    background_tasks.add_task(run_job_with_tracking, job_id, cmd)
+    
+    return {
+        "job_id": job_id,
+        "job_name": "stills_reverse_search",
+        "submitted": True,
+        "status": "running",
+        "message": "Stills reverse search thumbnail generation submitted for all imported records"
+    }
+
 @app.post("/scan/bins", dependencies=[Depends(check_key)])
 def scan_bins(background_tasks: BackgroundTasks, force_refresh: bool = False):
     """
@@ -2021,10 +2069,13 @@ def scan_bins(background_tasks: BackgroundTasks, force_refresh: bool = False):
     """
     from utils.bin_scanner import scan_all_bins
     
+    # Submit job for tracking first
+    job_id = job_tracker.submit_job("bin_scan", [f"force_refresh={force_refresh}"])
+    
     def run_bin_scan():
         """Run bin scan with job tracking."""
         try:
-            logging.info("🔍 Starting bin scan...")
+            logging.info(f"🔍 Starting bin scan (job {job_id})...")
             results = scan_all_bins()
             
             # Log results
@@ -2034,13 +2085,12 @@ def scan_bins(background_tasks: BackgroundTasks, force_refresh: bool = False):
                 else:
                     logging.error(f"❌ {media_type}: {result.get('error', 'Unknown error')}")
             
-            logging.info("✅ Bin scan complete")
+            logging.info(f"✅ Bin scan complete (job {job_id})")
             
         except Exception as e:
             logging.error(f"❌ Bin scan error: {e}")
-    
-    # Submit job for tracking
-    job_id = job_tracker.submit_job("bin_scan", [f"force_refresh={force_refresh}"])
+        finally:
+            job_tracker.complete_job(job_id)
     
     # Run in background
     background_tasks.add_task(run_bin_scan)
