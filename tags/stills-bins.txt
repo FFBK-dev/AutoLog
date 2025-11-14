@@ -1,6 +1,6 @@
 # STILLS BINS
-# Generated: 2025-11-12 11:26:21
-# Total bins: 83
+# Generated: 2025-11-13 06:00:04
+# Total bins: 82
 #
 Abolitionists
 Abraham Lincoln
@@ -76,7 +76,6 @@ Slave Markets
 Stage Coaches
 Steamboats
 Street scenes
-Suffrage
 Susan B Anthony
 Trains
 Uncategorized

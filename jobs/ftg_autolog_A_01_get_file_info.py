@@ -31,11 +31,13 @@ FIELD_MAPPING = {
     "color_mode": "INFO_ColorMode",
     "archival_id": "INFO_Archival_ID",
     "source": "INFO_Source",
-    "filename": "INFO_Filename"
+    "filename": "INFO_Filename",
+    "date_created": "SPECS_DateCreated",  # Timestamp: YYMMDD - HH:MM
+    "time_of_day": "SPECS_TimeOfDay"      # Category: Morning/Midday/Evening/Night
 }
 
 def extract_exif_metadata(file_path):
-    """Extract EXIF metadata using ExifTool, focusing on QuickTime fields."""
+    """Extract EXIF metadata using ExifTool, focusing on QuickTime fields and timestamps."""
     print(f"  -> Extracting EXIF metadata from: {file_path}")
     
     try:
@@ -51,11 +53,16 @@ def extract_exif_metadata(file_path):
         if not exiftool_cmd:
             raise RuntimeError("ExifTool not found in any expected location")
         
-        # Run ExifTool to get QuickTime Comment and Description
+        # Run ExifTool to get QuickTime Comment, Description, and timestamps
         cmd = [
             exiftool_cmd,
             '-QuickTime:Comment',
-            '-QuickTime:Description', 
+            '-QuickTime:Description',
+            '-CreateDate',
+            '-CreationDate',
+            '-MediaCreateDate',
+            '-DateTimeOriginal',
+            '-TrackCreateDate',
             '-json',
             file_path
         ]
@@ -64,11 +71,11 @@ def extract_exif_metadata(file_path):
         
         if result.returncode != 0:
             print(f"  -> ExifTool warning/error: {result.stderr}")
-            return ""
+            return "", None
         
         if not result.stdout.strip():
             print(f"  -> No EXIF data found")
-            return ""
+            return "", None
         
         metadata_json = json.loads(result.stdout)[0]
         
@@ -86,14 +93,80 @@ def extract_exif_metadata(file_path):
         combined_metadata = "\n".join(metadata_parts)
         print(f"  -> Extracted {len(combined_metadata)} characters of EXIF metadata")
         
-        return combined_metadata
+        # Extract recording timestamp (prioritize fields that represent actual recording time)
+        timestamp = None
+        timestamp_fields = ['CreationDate', 'MediaCreateDate', 'CreateDate', 'DateTimeOriginal', 'TrackCreateDate']
+        
+        for field in timestamp_fields:
+            if field in metadata_json and metadata_json[field]:
+                timestamp = metadata_json[field]
+                print(f"  -> Found recording timestamp from {field}: {timestamp}")
+                break
+        
+        if not timestamp:
+            print(f"  -> No recording timestamp found in metadata")
+        
+        return combined_metadata, timestamp
         
     except subprocess.TimeoutExpired:
         print(f"  -> ExifTool timed out")
-        return ""
+        return "", None
     except Exception as e:
         print(f"  -> ExifTool error: {e}")
-        return ""
+        return "", None
+
+def format_timestamp(timestamp):
+    """
+    Format timestamp as YYMMDD - HH:MM.
+    
+    Timestamp formats handled:
+    - "2025:11:05 06:22:21"
+    - "2023:09:22 20:31:59-05:00"
+    
+    Returns: "251105 - 06:22" or None if parsing fails
+    """
+    if not timestamp:
+        return None
+    
+    try:
+        # Split timestamp into date and time parts
+        # Handle formats: "2025:11:05 06:22:21" or "2023:09:22 20:31:59-05:00"
+        parts = timestamp.split()
+        if len(parts) < 2:
+            print(f"  -> Could not parse timestamp: {timestamp}")
+            return None
+        
+        date_part = parts[0]  # "2025:11:05"
+        time_part = parts[1]  # "06:22:21" or "06:22:21-05:00"
+        
+        # Extract date components: YYYY:MM:DD
+        date_components = date_part.split(':')
+        if len(date_components) != 3:
+            print(f"  -> Invalid date format: {date_part}")
+            return None
+        
+        year = date_components[0][-2:]  # Last 2 digits of year
+        month = date_components[1]
+        day = date_components[2]
+        
+        # Extract time components: HH:MM:SS
+        time_components = time_part.split(':')
+        if len(time_components) < 2:
+            print(f"  -> Invalid time format: {time_part}")
+            return None
+        
+        hour = time_components[0]
+        minute = time_components[1]
+        
+        # Format as YYMMDD - HH:MM
+        formatted = f"{year}{month}{day} - {hour}:{minute}"
+        
+        print(f"  -> Formatted timestamp: {formatted}")
+        return formatted
+        
+    except Exception as e:
+        print(f"  -> Error formatting timestamp: {e}")
+        return None
 
 def extract_url_from_metadata(metadata_text):
     """Extract URL from metadata text using regex patterns."""
@@ -600,8 +673,11 @@ if __name__ == "__main__":
             print(f"  -> Updated record status to indicate file not found")
             sys.exit(1)  # Exit this specific job, but don't crash the whole system
         
-        # Step 1: Extract EXIF metadata
-        metadata = extract_exif_metadata(file_path)
+        # Step 1: Extract EXIF metadata and timestamp
+        metadata, recording_timestamp = extract_exif_metadata(file_path)
+        
+        # Step 1a: Format timestamp as YYMMDD - HH:MM for SPECS_DateCreated
+        date_created = format_timestamp(recording_timestamp) if recording_timestamp else None
         
         # Step 2: Extract URL from metadata if present
         url = extract_url_from_metadata(metadata)
@@ -654,6 +730,11 @@ if __name__ == "__main__":
         
         # Always update metadata field
         field_data[FIELD_MAPPING["metadata"]] = metadata
+        
+        # Update date created if found
+        if date_created:
+            field_data[FIELD_MAPPING["date_created"]] = date_created
+            print(f"  -> Date created: {date_created}")
         
         # Update URL if found (either from metadata or generated)
         if url:

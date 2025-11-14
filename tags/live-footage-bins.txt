@@ -1,9 +1,10 @@
 # LIVE BINS
-# Generated: 2025-11-12 11:26:21
-# Total bins: 60
+# Generated: 2025-11-13 06:00:05
+# Total bins: 66
 #
 Animals
 Bay_Harbor
+Bodies of Water
 Brick Baptist Church
 Bridges
 Buildings_Misc
@@ -13,19 +14,23 @@ Cannons
 Canyon
 Cemetary
 Chapel of Ease
+Church
 Church Ruins
 Church_Exterior
 Church_Interior
 Creek
 Desert
+Enslaved Cabin
 Enslaved Cabin_Exterior
 Enslaved Cabin_Interior
 Farms_Crops
 Field_Fences
 Field_Grass
 Green-Meldrim House
+House
 House_Exterior
 House_Interior
+Indigenous Home
 Indigenous Home_Exterior
 Indigenous Home_Interior
 Lafargue Cemetary
@@ -57,6 +62,7 @@ South Carolina State House
 St. Helena’s Church
 Statues
 Sun
+Sun_2
 Sunrise
 Sunset
 Swamp

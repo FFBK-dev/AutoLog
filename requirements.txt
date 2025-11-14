@@ -13,4 +13,5 @@ selenium>=4.15.0
 google-generativeai>=0.3.2
 redis>=4.5.0
 rq>=1.15.0
-rq-dashboard>=0.6.1 
+rq-dashboard>=0.6.1
+astral>=3.2 

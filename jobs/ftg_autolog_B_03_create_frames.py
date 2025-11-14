@@ -15,6 +15,9 @@ import json
 import warnings
 from pathlib import Path
 import requests
+from datetime import datetime
+from astral import LocationInfo
+from astral.sun import sun
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -33,6 +36,8 @@ FIELD_MAPPING = {
     "tags_list": "TAGS_List",
     "primary_bin": "INFO_PrimaryBin",
     "video_events": "INFO_Video_Events",
+    "date_created": "SPECS_DateCreated",
+    "time_of_day": "SPECS_TimeOfDay",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_status": "FRAMES_Status",
     "frame_timecode": "FRAMES_TC_IN",
@@ -41,6 +46,182 @@ FIELD_MAPPING = {
     "frame_thumbnail": "FRAMES_Thumbnail",
     "frame_framerate": "FOOTAGE::SPECS_File_Framerate"
 }
+
+
+def get_timezone_offset_from_coordinates(lat, lon):
+    """
+    Estimate UTC offset based on longitude.
+    Approximation for US locations.
+    
+    Returns:
+        Integer UTC offset (e.g., -5 for Eastern Time)
+    """
+    # Rough timezone estimation based on longitude
+    # US timezones: Eastern (-5), Central (-6), Mountain (-7), Pacific (-8)
+    if lon > -85:  # Eastern
+        return -5
+    elif lon > -100:  # Central
+        return -6
+    elif lon > -115:  # Mountain
+        return -7
+    else:  # Pacific
+        return -8
+
+
+def calculate_time_of_day(date_created_str, location_str):
+    """
+    Calculate time-of-day category based on location and timestamp.
+    
+    Categories based on sunrise/sunset with twilight buffers:
+    - Morning: 1 hour before sunrise to 2 hours after sunrise (captures pre-dawn light)
+    - Midday: 2 hours after sunrise to 2 hours before sunset
+    - Evening: 2 hours before sunset to 1 hour after sunset (captures twilight/blue hour)
+    - Night: more than 1 hour after sunset or more than 1 hour before sunrise
+    
+    Args:
+        date_created_str: Timestamp string like "251105 - 06:22" (YYMMDD - HH:MM)
+        location_str: Location string from Gemini (e.g., "Savannah, Georgia")
+        
+    Returns:
+        String: "Morning", "Midday", "Evening", or "Night"
+    """
+    if not date_created_str or not location_str:
+        return None
+    
+    try:
+        # Parse the date and time from YYMMDD - HH:MM format
+        date_part, time_part = date_created_str.split(' - ')
+        
+        # Parse date: YYMMDD
+        year = int('20' + date_part[0:2])  # 25 -> 2025
+        month = int(date_part[2:4])
+        day = int(date_part[4:6])
+        
+        # Parse time: HH:MM (this is in LOCAL time from the camera)
+        hour = int(time_part.split(':')[0])
+        minute = int(time_part.split(':')[1])
+        
+        # Create datetime object
+        recording_time = datetime(year, month, day, hour, minute)
+        recording_hour = hour + (minute / 60.0)  # Local time
+        
+        # Get coordinates for location
+        lat, lon = get_coordinates_from_location(location_str)
+        
+        # Estimate timezone offset from coordinates
+        utc_offset = get_timezone_offset_from_coordinates(lat, lon)
+        
+        # Create LocationInfo for astral
+        location = LocationInfo(
+            name=location_str,
+            region='',
+            timezone='UTC',  # Doesn't matter, we'll handle offset manually
+            latitude=lat,
+            longitude=lon
+        )
+        
+        # Calculate sun times (returns UTC times)
+        s = sun(location.observer, date=recording_time.date())
+        sunrise_utc = s['sunrise']
+        sunset_utc = s['sunset']
+        
+        # Convert UTC to local time by applying timezone offset
+        sunrise_local_hour = (sunrise_utc.hour + utc_offset) + (sunrise_utc.minute / 60.0)
+        sunset_local_hour = (sunset_utc.hour + utc_offset) + (sunset_utc.minute / 60.0)
+        
+        # Handle day wraparound (e.g., if offset makes it negative or >= 24)
+        if sunrise_local_hour < 0:
+            sunrise_local_hour += 24
+        if sunrise_local_hour >= 24:
+            sunrise_local_hour -= 24
+        if sunset_local_hour < 0:
+            sunset_local_hour += 24
+        if sunset_local_hour >= 24:
+            sunset_local_hour -= 24
+        
+        # Calculate the time boundaries with twilight buffers
+        morning_start = sunrise_local_hour - 1  # 1 hour before sunrise (pre-dawn)
+        morning_end = sunrise_local_hour + 2    # 2 hours after sunrise
+        evening_start = sunset_local_hour - 2   # 2 hours before sunset
+        evening_end = sunset_local_hour + 1     # 1 hour after sunset (twilight/blue hour)
+        
+        # Determine category
+        if recording_hour < morning_start or recording_hour >= evening_end:
+            category = "Night"
+        elif recording_hour < morning_end:
+            category = "Morning"
+        elif recording_hour >= evening_start:
+            category = "Evening"
+        else:
+            category = "Midday"
+        
+        print(f"  -> Time of day calculation:")
+        print(f"     Location: {location_str} (lat: {lat:.2f}, lon: {lon:.2f})")
+        print(f"     Timezone: UTC{utc_offset:+d}")
+        print(f"     Recording: {hour:02d}:{minute:02d} (local)")
+        print(f"     Sunrise: {int(sunrise_local_hour):02d}:{int((sunrise_local_hour % 1) * 60):02d}")
+        print(f"     Sunset: {int(sunset_local_hour):02d}:{int((sunset_local_hour % 1) * 60):02d}")
+        print(f"     Morning: {int(morning_start):02d}:{int((morning_start % 1) * 60):02d} to {int(morning_end):02d}:{int((morning_end % 1) * 60):02d}")
+        print(f"     Evening: {int(evening_start):02d}:{int((evening_start % 1) * 60):02d} to {int(evening_end):02d}:{int((evening_end % 1) * 60):02d}")
+        print(f"     Category: {category}")
+        
+        return category
+        
+    except Exception as e:
+        print(f"  -> Warning: Could not calculate time of day: {e}")
+        return None
+
+
+def get_coordinates_from_location(location_str):
+    """
+    Extract approximate coordinates from location string.
+    Uses simple lookup for common locations, falls back to US mid-latitude.
+    
+    Returns:
+        Tuple of (latitude, longitude)
+    """
+    if not location_str:
+        return (36.0, -86.0)  # Default: Nashville area
+    
+    location_lower = location_str.lower()
+    
+    # Simple lookup for common US cities/states
+    location_coords = {
+        'savannah': (32.08, -81.09),
+        'georgia': (32.16, -82.90),
+        'nashville': (36.16, -86.78),
+        'tennessee': (35.86, -86.66),
+        'new york': (40.71, -74.01),
+        'los angeles': (34.05, -118.24),
+        'chicago': (41.88, -87.63),
+        'houston': (29.76, -95.37),
+        'philadelphia': (39.95, -75.17),
+        'louisiana': (30.98, -91.96),
+        'new orleans': (29.95, -90.07),
+        'atlanta': (33.75, -84.39),
+        'miami': (25.76, -80.19),
+        'dallas': (32.78, -96.80),
+        'san francisco': (37.77, -122.42),
+        'boston': (42.36, -71.06),
+        'washington': (38.91, -77.04),
+        'seattle': (47.61, -122.33),
+        'denver': (39.74, -104.99),
+        'mississippi': (32.32, -90.21),
+        'alabama': (32.32, -86.90),
+        'south carolina': (33.84, -81.16),
+        'north carolina': (35.63, -79.81),
+        'florida': (27.66, -81.52),
+        'texas': (31.05, -97.56),
+        'california': (36.12, -119.68),
+    }
+    
+    # Check for matches
+    for place, coords in location_coords.items():
+        if place in location_lower:
+            return coords
+    
+    # Default to mid-US
+    return (36.0, -86.0)  # Nashville area
 
 
 def create_frame_record_with_caption(token, footage_id, frame_data, frame_metadata, framerate):
@@ -207,16 +388,29 @@ if __name__ == "__main__":
         tags_str = ", ".join(global_data['tags']) if global_data['tags'] else ""
         primary_bin = global_data.get('primary_bin', '')
         
+        # Calculate time of day using SPECS_DateCreated and location from Gemini
+        time_of_day = None
+        date_created = footage_data.get(FIELD_MAPPING["date_created"])
+        location = global_data['location'] if global_data['location'] else ""
+        
+        if date_created and location:
+            print(f"\n⏰ Calculating time of day...")
+            time_of_day = calculate_time_of_day(date_created, location)
+        
         # Update fields
         field_data = {
             FIELD_MAPPING["description"]: global_data['synopsis'],
             FIELD_MAPPING["date"]: global_data['date'],
-            FIELD_MAPPING["location"]: global_data['location'] if global_data['location'] else "",
+            FIELD_MAPPING["location"]: location,
             FIELD_MAPPING["audio_type"]: global_data['audio_type'],
             FIELD_MAPPING["tags_list"]: tags_str,
             FIELD_MAPPING["primary_bin"]: primary_bin,
             FIELD_MAPPING["video_events"]: video_events_csv
         }
+        
+        # Add time of day if calculated
+        if time_of_day:
+            field_data[FIELD_MAPPING["time_of_day"]] = time_of_day
         
         # Add title if field exists
         if "INFO_Title" in footage_data:
@@ -233,6 +427,8 @@ if __name__ == "__main__":
             print(f"     Audio: {global_data['audio_type']}")
             print(f"     Tags: {tags_str if tags_str else 'None'}")
             print(f"     Primary Bin: {primary_bin if primary_bin else 'None'}")
+            if time_of_day:
+                print(f"     Time of Day: {time_of_day}")
         else:
             print(f"  -> ❌ Failed to update parent record: {update_response.status_code}")
             raise RuntimeError("Failed to update parent FOOTAGE record")
