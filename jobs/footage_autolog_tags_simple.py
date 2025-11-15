@@ -20,7 +20,7 @@ __ARGS__ = ["footage_id"]
 FIELD_MAPPING = {
     "footage_id": "INFO_FTG_ID",
     "tags_list": "TAGS_List",
-    "primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "frame_parent_id": "FRAMES_ParentID",
     "frame_caption": "FRAMES_Caption",
     "frame_transcript": "FRAMES_Transcript",
@@ -187,10 +187,11 @@ CRITICAL INSTRUCTIONS FOR TAGS:
 3. Select as many relevant tags as appropriate (no arbitrary limit for footage)
 4. Focus on the most prominent and consistent elements across the frames
 
-CRITICAL INSTRUCTIONS FOR PRIMARY BIN:
-1. Choose ONE SINGLE bin from the APPROVED BINS LIST below
-2. Select the bin that is MOST representative of this footage for Avid organization
-3. Do not invent bin names - ONLY use bins from the provided list
+CRITICAL INSTRUCTIONS FOR AVID BINS:
+1. Select 1-4 bins from the APPROVED BINS LIST below
+2. The first bin should be MOST representative of this footage for Avid organization
+3. Return bins as a comma-separated string in priority order
+4. Do not invent bin names - ONLY use bins from the provided list
 
 FRAME-BY-FRAME CONTENT:
 {frame_content}
@@ -203,7 +204,7 @@ APPROVED BINS LIST:
 
 Return your answer as a JSON object with exactly TWO fields:
 - `tags`: [Array of exact tag names from the approved tags list. Select all relevant tags.]
-- `primary_bin`: [REQUIRED - Single bin name from the approved bins list that is MOST representative of this footage]"""
+- `avid_bins`: [REQUIRED - Comma-separated string of 1-4 bin names from the approved bins list, with the first being MOST representative of this footage]"""
 
         # Make OpenAI API call
         print(f"  -> Calling OpenAI API for tag generation...")
@@ -221,7 +222,7 @@ Return your answer as a JSON object with exactly TWO fields:
         try:
             data = json.loads(response_text)
             returned_tags = data.get('tags', [])
-            primary_bin = data.get('primary_bin', '')
+            avid_bins = data.get('avid_bins', '')
             
             # Ensure tags is a list
             if isinstance(returned_tags, str):
@@ -232,12 +233,12 @@ Return your answer as a JSON object with exactly TWO fields:
             print(f"🏷️  TAGS RETURNED: {', '.join(returned_tags) if returned_tags else 'None'}")
             print(f"🏷️  TOTAL TAG COUNT: {len(returned_tags)}")
             
-            if primary_bin:
-                print(f"🗂️  PRIMARY BIN: {primary_bin}")
+            if avid_bins:
+                print(f"🗂️  AVID BINS: {avid_bins}")
             else:
-                print(f"⚠️  No primary bin returned")
+                print(f"⚠️  No avid bins returned")
             
-            return {'tags': returned_tags, 'primary_bin': primary_bin}
+            return {'tags': returned_tags, 'avid_bins': avid_bins}
             
         except json.JSONDecodeError as e:
             print(f"  -> ERROR: Failed to parse JSON response: {e}")
@@ -298,7 +299,7 @@ if __name__ == "__main__":
             print(f"⚠️ No tags were generated")
             # Still update with empty strings to clear any existing tags
             tags_for_fm = ""
-            primary_bin = ""
+            avid_bins = ""
         else:
             # Format tags for FileMaker (comma-separated)
             # Ensure tags is a list (sometimes API returns string by mistake)
@@ -306,12 +307,12 @@ if __name__ == "__main__":
             if isinstance(tags, str):
                 tags = [tags]
             tags_for_fm = ", ".join(tags)
-            primary_bin = result.get('primary_bin', '')
+            avid_bins = result.get('avid_bins', '')
         
-        # Update TAGS_List and INFO_PrimaryBin fields
+        # Update TAGS_List and INFO_AvidBins fields
         field_data = {
             FIELD_MAPPING["tags_list"]: tags_for_fm,
-            FIELD_MAPPING["primary_bin"]: primary_bin
+            FIELD_MAPPING["avid_bins"]: avid_bins
         }
         
         update_response = config.update_record(token, "FOOTAGE", record_id, field_data)
@@ -319,8 +320,8 @@ if __name__ == "__main__":
         if update_response.status_code == 200:
             print(f"✅ Successfully updated tags for footage {footage_id}")
             print(f"  -> Tags: {tags_for_fm if tags_for_fm else 'None'}")
-            if primary_bin:
-                print(f"  -> Primary Bin: {primary_bin}")
+            if avid_bins:
+                print(f"  -> Avid Bins: {avid_bins}")
             sys.exit(0)
         else:
             print(f"❌ Failed to update footage record: {update_response.status_code}")

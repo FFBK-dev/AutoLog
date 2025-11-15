@@ -22,7 +22,7 @@ FIELD_MAPPING = {
     "description": "INFO_Description",
     "server_path": "SPECS_Filepath_Server",
     "tags_list": "TAGS_List",
-    "primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "dev_console": "AI_DevConsole",
     "globals_api_key_1": "SystemGlobals_AutoLog_OpenAI_API_Key_1",
     "globals_api_key_2": "SystemGlobals_AutoLog_OpenAI_API_Key_2",
@@ -263,25 +263,25 @@ def process_single_item(stills_id, token):
             # Format tags for FileMaker (comma-separated)
             tags_for_fm = ", ".join(selected_tags)
             
-            # Extract primary bin from response
-            primary_bin = content.get('primary_bin', '')
-            if primary_bin:
-                print(f"🗂️  PRIMARY BIN: {primary_bin}")
+            # Extract avid bins from response
+            avid_bins = content.get('avid_bins', '')
+            if avid_bins:
+                print(f"🗂️  AVID BINS: {avid_bins}")
             else:
-                print(f"⚠️  No primary bin returned in response")
+                print(f"⚠️  No avid bins returned in response")
             
             # Update FileMaker
             update_data = {
                 FIELD_MAPPING["tags_list"]: tags_for_fm,
-                FIELD_MAPPING["primary_bin"]: primary_bin
+                FIELD_MAPPING["avid_bins"]: avid_bins
             }
             
             config.update_record(token, "Stills", record_id, update_data)
             
             print(f"\n✅ SUCCESS: {stills_id}")
             print(f"   Tags written to FileMaker: {tags_for_fm}")
-            if primary_bin:
-                print(f"   Primary bin written to FileMaker: {primary_bin}")
+            if avid_bins:
+                print(f"   Avid bins written to FileMaker: {avid_bins}")
             return True
         else:
             print(f"\n❌ FAILED: {stills_id} - No tags returned")

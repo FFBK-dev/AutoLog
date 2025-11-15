@@ -177,8 +177,9 @@ APPROVED BINS - Select ONE primary bin for Avid organization:
 {bins_list_text}
 
 CRITICAL BIN SELECTION RULE:
-- Choose ONE SINGLE bin from the APPROVED BINS LIST above
-- Select the bin that is MOST representative of this footage for Avid organization
+- Select 1-4 bins from the APPROVED BINS LIST above
+- The first bin should be MOST representative of this footage for Avid organization
+- Return bins as a comma-separated string in priority order
 - Do not invent bin names - ONLY use bins from the provided list
 
 Return your analysis as strict JSON with this exact structure:
@@ -192,7 +193,7 @@ Return your analysis as strict JSON with this exact structure:
     "audio_type": "Sound or MOS (will be determined from audio detection)",
     "camera_summary": ["List of camera movements detected across the sequence"],
     "tags": ["Select all visually prominent tags from approved tags list"],
-    "primary_bin": "REQUIRED - Select ONE SINGLE bin from the approved bins list that is MOST representative of this footage"
+    "avid_bins": "REQUIRED - Comma-separated string of 1-4 bin names from the approved bins list, with the first being MOST representative of this footage"
   }},
   "frames": [
     {{
@@ -319,9 +320,9 @@ if __name__ == "__main__":
                             "type": "array",
                             "items": {"type": "string"}
                         },
-                        "primary_bin": {"type": "string"}
+                        "avid_bins": {"type": "string"}
                     },
-                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags", "primary_bin"]
+                    "required": ["title", "synopsis", "date", "location", "audio_type", "camera_summary", "tags", "avid_bins"]
                 },
                 "frames": {
                     "type": "array",
@@ -390,7 +391,7 @@ if __name__ == "__main__":
         print(f"  Location: {gemini_result['global']['location']}")
         print(f"  Audio Type: {gemini_result['global']['audio_type']}")
         print(f"  Tags: {', '.join(gemini_result['global']['tags'])}")
-        print(f"  Primary Bin: {gemini_result['global'].get('primary_bin', 'None')}")
+        print(f"  Avid Bins: {gemini_result['global'].get('avid_bins', 'None')}")
         print(f"  Frames analyzed: {len(gemini_result['frames'])}")
         
         print(f"\n✅ Gemini analysis completed for {footage_id}")

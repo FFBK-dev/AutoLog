@@ -1,6 +1,6 @@
 # LIVE BINS
-# Generated: 2025-11-13 06:00:05
-# Total bins: 66
+# Generated: 2025-11-14 06:00:02
+# Total bins: 74
 #
 Animals
 Bay_Harbor
@@ -18,8 +18,11 @@ Church
 Church Ruins
 Church_Exterior
 Church_Interior
+Coosaw Island General
 Creek
+Cuthbert-Simmer House
 Desert
+Edisto Island General
 Enslaved Cabin
 Enslaved Cabin_Exterior
 Enslaved Cabin_Interior
@@ -27,27 +30,31 @@ Farms_Crops
 Field_Fences
 Field_Grass
 Green-Meldrim House
+Grove Plantation
 House
 House_Exterior
 House_Interior
 Indigenous Home
 Indigenous Home_Exterior
 Indigenous Home_Interior
+James Island General
+Joseph Johnson House
 Lafargue Cemetary
+Lafayette, LA General
 Lake
 Landmarks
 Marsh_Wetlands
+McLeod Plantation
 Moon
 Mountains
 Ocean
-Old State Capitol_Exterior
-Old State Capitol_Interior
+Old Sheldon Church
+Old State Capitol
 Parade
-Peabody High Football Game
-Peabody High Pep Rally
-Peabody High School
+Peabody High
 Plantation House
 Pond
+Port Royal Island General
 Prairie
 Puddles
 Railroads
@@ -59,6 +66,7 @@ Rocks
 Ship
 Sky
 South Carolina State House
+St. Helena's Island General
 St. Helena’s Church
 Statues
 Sun

@@ -330,14 +330,14 @@ def execute_metadata_query_sync(payload: dict):
         if result.returncode == 0:
             response_data = json.loads(result.stdout)
             
-            # DEBUG: Log response structure to diagnose PrimaryBin issue
+            # DEBUG: Log response structure to diagnose AvidBins issue
             if response_data.get('results') and len(response_data['results']) > 0:
                 first_result = response_data['results'][0]
                 logging.info(f"🔍 DEBUG - Query response keys for first result: {list(first_result.keys())}")
-                if 'info_primary_bin' in first_result:
-                    logging.info(f"✅ DEBUG - info_primary_bin in response: '{first_result.get('info_primary_bin')}'")
+                if 'info_avid_bins' in first_result:
+                    logging.info(f"✅ DEBUG - info_avid_bins in response: '{first_result.get('info_avid_bins')}'")
                 else:
-                    logging.warning(f"⚠️ DEBUG - info_primary_bin NOT in response")
+                    logging.warning(f"⚠️ DEBUG - info_avid_bins NOT in response")
             
             return response_data
         else:
@@ -1864,16 +1864,16 @@ def metadata_bridge_export(request: Request, background_tasks: BackgroundTasks, 
         assets = payload.get('assets', [])
         logging.info(f"📋 Media type: {media_type}, assets count: {len(assets)}")
         
-        # DEBUG: Log first asset structure to diagnose PrimaryBin issue
+        # DEBUG: Log first asset structure to diagnose AvidBins issue
         if assets and len(assets) > 0:
             first_asset = assets[0]
             logging.info(f"🔍 DEBUG - First asset structure: {json.dumps(first_asset, indent=2)}")
             if 'metadata' in first_asset:
                 logging.info(f"🔍 DEBUG - Metadata keys: {list(first_asset['metadata'].keys())}")
-                if 'primary_bin' in first_asset['metadata']:
-                    logging.info(f"✅ DEBUG - primary_bin found: '{first_asset['metadata']['primary_bin']}'")
+                if 'avid_bins' in first_asset['metadata']:
+                    logging.info(f"✅ DEBUG - avid_bins found: '{first_asset['metadata']['avid_bins']}'")
                 else:
-                    logging.warning(f"⚠️ DEBUG - primary_bin NOT found in metadata")
+                    logging.warning(f"⚠️ DEBUG - avid_bins NOT found in metadata")
         
         # Validate payload
         if not media_type:

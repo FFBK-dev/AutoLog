@@ -182,7 +182,7 @@ STILLS_FIELD_MAPPING = {
     "info_source": "INFO_Source",
     "tags_list": "TAGS_List",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
-    "info_primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "autolog_status": "AutoLog_Status"
 }
 
@@ -198,8 +198,9 @@ FOOTAGE_FIELD_MAPPING = {
     "info_color_mode": "INFO_ColorMode",
     "info_audio_type": "INFO_AudioType",
     "info_avid_description": "INFO_AvidDescription",
+    "info_ff_project": "INFO_FF_Project",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
-    "info_primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "autolog_status": "AutoLog_Status"
 }
 
@@ -279,8 +280,8 @@ def update_stills_metadata(assets, token):
                     if metadata.get("reviewed_checkbox"):
                         field_data[STILLS_FIELD_MAPPING["info_reviewed_checkbox"]] = convert_text_to_checkbox(metadata["reviewed_checkbox"])
                     
-                    if metadata.get("primary_bin"):
-                        field_data[STILLS_FIELD_MAPPING["info_primary_bin"]] = metadata["primary_bin"]
+                    if metadata.get("avid_bins"):
+                        field_data[STILLS_FIELD_MAPPING["avid_bins"]] = metadata["avid_bins"]
                     
                     # Note: INFO_Name and INFO_Title fields don't exist in FileMaker Stills layout
                     # These fields are skipped to avoid "Field is missing" errors
@@ -410,11 +411,14 @@ def update_footage_metadata(assets, token, layout_name):
             if metadata.get("avid_description"):
                 field_data[FOOTAGE_FIELD_MAPPING["info_avid_description"]] = metadata["avid_description"]
             
+            if metadata.get("ff_project"):
+                field_data[FOOTAGE_FIELD_MAPPING["info_ff_project"]] = metadata["ff_project"]
+            
             if metadata.get("reviewed_checkbox"):
                 field_data[FOOTAGE_FIELD_MAPPING["info_reviewed_checkbox"]] = convert_text_to_checkbox(metadata["reviewed_checkbox"])
             
-            if metadata.get("primary_bin"):
-                field_data[FOOTAGE_FIELD_MAPPING["info_primary_bin"]] = metadata["primary_bin"]
+            if metadata.get("avid_bins"):
+                field_data[FOOTAGE_FIELD_MAPPING["avid_bins"]] = metadata["avid_bins"]
             
             # Note: INFO_Name field doesn't exist in FileMaker Footage layout
             # INFO_Title DOES exist in Footage layout, so it will be updated

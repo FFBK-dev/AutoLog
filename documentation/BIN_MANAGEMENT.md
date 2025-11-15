@@ -164,10 +164,10 @@ When AI processes an asset for tagging:
 3. **AI Analysis**: AI analyzes content with both lists
 4. **Separate Selection**:
    - **Tags**: AI selects multiple relevant tags (up to 4 for stills, unlimited for footage)
-   - **Primary Bin**: AI selects ONE bin that best represents the asset for Avid organization
+   - **Avid Bins**: AI selects 1-4 bins with the first being most representative for Avid organization
 5. **Write to FileMaker**:
    - Tags written to `TAGS_List` field
-   - Primary bin written to `INFO_PrimaryBin` field
+   - Avid bins written to `INFO_AvidBins` field (comma-separated, 1-4 bins)
 
 ### Footage ID-Based Bin Selection
 
@@ -324,20 +324,21 @@ curl -X POST -H "X-API-Key: your_api_key_here" http://localhost:8081/scan/bins
 
 ### Fields
 - **TAGS_List**: Comma-separated list of tags
-- **INFO_PrimaryBin**: Single bin name selected by AI
+- **INFO_AvidBins**: Comma-separated list of 1-4 bin names, with first being most representative
 
 ### Field Mapping
 ```python
 FIELD_MAPPING = {
     "tags_list": "TAGS_List",
-    "primary_bin": "INFO_PrimaryBin"
+    "avid_bins": "INFO_AvidBins"
 }
 ```
 
 ### Avid Panel Integration
-The primary bin field can be used by the Avid panel to:
-- Auto-organize clips into appropriate bins
-- Suggest bin placements to editors
+The avid bins field can be used by the Avid panel to:
+- Auto-organize clips into appropriate bins (using first bin as primary)
+- Suggest multiple bin placements to editors
+- Allow editors to choose from top bin recommendations
 - Filter/search by primary bin
 - Generate bin reports
 

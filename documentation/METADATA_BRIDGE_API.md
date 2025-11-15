@@ -29,7 +29,7 @@ Content-Type: application/json
 }
 ```
 
-**Response**:
+**Response (Stills)**:
 ```json
 {
   "media_type": "stills",
@@ -53,6 +53,34 @@ Content-Type: application/json
 }
 ```
 
+**Response (Footage - Archival or Live)**:
+```json
+{
+  "media_type": "archival",
+  "requested_identifiers": ["A075C005_250428_R3WV.mov"],
+  "results": [
+    {
+      "identifier": "A075C005_250428_R3WV.mov",
+      "found": true,
+      "ftg_id": "LF0005",
+      "info_description": "Sunrise over Charleston Harbor",
+      "info_title": "Sunrise Over Charleston Harbor",
+      "info_location": "Charleston, SC",
+      "info_source": "20250428",
+      "info_date": "2025-04-28",
+      "tags_list": "sunrise, harbor, charleston",
+      "info_avid_description": "Beautiful morning light",
+      "info_color_mode": "Color",
+      "info_audio_type": "Stereo",
+      "info_ff_project": "Charleston Documentary 2025",
+      "info_reviewed_checkbox": "Yes",
+      "info_avid_bins": "Archive Collection 2025"
+    }
+  ],
+  "timestamp": "2025-04-28T10:30:00Z"
+}
+```
+
 ### 2. Metadata Export (Avid Media Composer → FileMaker Pro)
 
 **Endpoint**: `POST /metadata-bridge/export`
@@ -65,10 +93,10 @@ X-API-Key: your_api_key
 Content-Type: application/json
 ```
 
-**Request Payload**:
+**Request Payload (Stills)**:
 ```json
 {
-  "media_type": "stills|archival|live_footage",
+  "media_type": "stills",
   "assets": [
     {
       "identifier": "STILLS_001",
@@ -81,6 +109,36 @@ Content-Type: application/json
         "tags": "updated, tags, from, avid",
         "source": "Updated Source",
         "title": "Updated Title"
+      }
+    }
+  ]
+}
+```
+
+**Request Payload (Footage - Archival or Live)**:
+```json
+{
+  "media_type": "archival",
+  "assets": [
+    {
+      "identifier": "A075C005_250428_R3WV.mov",
+      "mob_id": "mob_78901",
+      "media_type": "archival",
+      "metadata": {
+        "source_file": "A075C005_250428_R3WV.mov",
+        "name": "LF0005",
+        "description": "Sunrise over Charleston Harbor",
+        "date": "2025-04-28",
+        "tags": "sunrise, harbor, charleston",
+        "title": "Sunrise Over Charleston Harbor",
+        "location": "Charleston, SC",
+        "source": "20250428",
+        "avid_bins": "Archive Collection 2025",
+        "avid_description": "Beautiful morning light",
+        "color_mode": "Color",
+        "audio_type": "Stereo",
+        "ff_project": "Charleston Documentary 2025",
+        "reviewed_checkbox": "Yes"
       }
     }
   ]
@@ -130,6 +188,12 @@ Content-Type: application/json
   - `source` → `INFO_Source`
   - `date` → `INFO_Date`
   - `tags` → `TAGS_List`
+  - `color_mode` → `INFO_ColorMode`
+  - `audio_type` → `INFO_AudioType`
+  - `avid_description` → `INFO_AvidDescription`
+  - `ff_project` → `INFO_FF_Project`
+  - `reviewed_checkbox` → `INFO_Reviewed_Checkbox`
+  - `avid_bins` → `INFO_AvidBins`
 
 ### Live Footage (`media_type: "live_footage"`)
 - **Identifier Field**: `INFO_Filename`

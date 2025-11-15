@@ -249,7 +249,7 @@ STILLS_FIELD_MAPPING = {
     "info_source": "INFO_Source",
     "tags_list": "TAGS_List",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
-    "info_primary_bin": "INFO_PrimaryBin"
+    "avid_bins": "INFO_AvidBins"
 }
 
 FOOTAGE_FIELD_MAPPING = {
@@ -264,8 +264,9 @@ FOOTAGE_FIELD_MAPPING = {
     "info_color_mode": "INFO_ColorMode",
     "info_audio_type": "INFO_AudioType",
     "info_avid_description": "INFO_AvidDescription",
+    "info_ff_project": "INFO_FF_Project",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
-    "info_primary_bin": "INFO_PrimaryBin"
+    "avid_bins": "INFO_AvidBins"
 }
 
 def get_stills_metadata(stills_ids, token):
@@ -333,7 +334,7 @@ def get_stills_metadata(stills_ids, token):
                         "info_source": record_data.get(STILLS_FIELD_MAPPING["info_source"], ""),
                         "tags_list": record_data.get(STILLS_FIELD_MAPPING["tags_list"], ""),
                         "info_reviewed_checkbox": convert_checkbox_to_text(record_data.get(STILLS_FIELD_MAPPING["info_reviewed_checkbox"], "")),
-                        "info_primary_bin": record_data.get(STILLS_FIELD_MAPPING["info_primary_bin"], "")
+                        "info_avid_bins": record_data.get(STILLS_FIELD_MAPPING["avid_bins"], "")
                     }
                     
                     results.append(metadata)
@@ -429,8 +430,9 @@ def get_footage_metadata(file_names, token, layout_name):
                         "info_color_mode": record_data.get(FOOTAGE_FIELD_MAPPING["info_color_mode"], ""),
                         "info_audio_type": record_data.get(FOOTAGE_FIELD_MAPPING["info_audio_type"], ""),
                         "info_avid_description": record_data.get(FOOTAGE_FIELD_MAPPING["info_avid_description"], ""),
+                        "info_ff_project": record_data.get(FOOTAGE_FIELD_MAPPING["info_ff_project"], ""),
                         "info_reviewed_checkbox": convert_checkbox_to_text(record_data.get(FOOTAGE_FIELD_MAPPING["info_reviewed_checkbox"], "")),
-                        "info_primary_bin": record_data.get(FOOTAGE_FIELD_MAPPING["info_primary_bin"], "")
+                        "info_avid_bins": record_data.get(FOOTAGE_FIELD_MAPPING["avid_bins"], "")
                     }
                     
                     results.append(metadata)

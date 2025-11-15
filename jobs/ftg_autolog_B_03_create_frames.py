@@ -34,7 +34,7 @@ FIELD_MAPPING = {
     "location": "INFO_Location",
     "audio_type": "INFO_AudioType",
     "tags_list": "TAGS_List",
-    "primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "video_events": "INFO_Video_Events",
     "date_created": "SPECS_DateCreated",
     "time_of_day": "SPECS_TimeOfDay",
@@ -386,7 +386,7 @@ if __name__ == "__main__":
         
         # Format tags
         tags_str = ", ".join(global_data['tags']) if global_data['tags'] else ""
-        primary_bin = global_data.get('primary_bin', '')
+        avid_bins = global_data.get('avid_bins', '')
         
         # Calculate time of day using SPECS_DateCreated and location from Gemini
         time_of_day = None
@@ -404,7 +404,7 @@ if __name__ == "__main__":
             FIELD_MAPPING["location"]: location,
             FIELD_MAPPING["audio_type"]: global_data['audio_type'],
             FIELD_MAPPING["tags_list"]: tags_str,
-            FIELD_MAPPING["primary_bin"]: primary_bin,
+            FIELD_MAPPING["avid_bins"]: avid_bins,
             FIELD_MAPPING["video_events"]: video_events_csv
         }
         
@@ -426,7 +426,7 @@ if __name__ == "__main__":
             print(f"     Location: {global_data['location'] if global_data['location'] else 'Not specified'}")
             print(f"     Audio: {global_data['audio_type']}")
             print(f"     Tags: {tags_str if tags_str else 'None'}")
-            print(f"     Primary Bin: {primary_bin if primary_bin else 'None'}")
+            print(f"     Avid Bins: {avid_bins if avid_bins else 'None'}")
             if time_of_day:
                 print(f"     Time of Day: {time_of_day}")
         else:

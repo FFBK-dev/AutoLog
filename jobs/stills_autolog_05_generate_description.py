@@ -30,7 +30,7 @@ FIELD_MAPPING = {
     "description": "INFO_Description",
     "date": "INFO_Date",
     "tags_list": "TAGS_List",
-    "primary_bin": "INFO_PrimaryBin",
+    "avid_bins": "INFO_AvidBins",
     "server_path": "SPECS_Filepath_Server",
     "status": "AutoLog_Status",
     "reviewed_checkbox": "INFO_Reviewed_Checkbox",
@@ -450,18 +450,18 @@ def process_single_item(stills_id, token, continue_workflow=False):
             print(f"⚠️  No tags returned in response")
             tags_for_fm = ""
         
-        # Extract primary bin from response
-        primary_bin = content.get("primary_bin") or content.get("Primary_bin", "")
-        if primary_bin:
-            print(f"🗂️  PRIMARY BIN: {primary_bin}")
+        # Extract avid bins from response
+        avid_bins = content.get("avid_bins") or content.get("Avid_bins", "")
+        if avid_bins:
+            print(f"🗂️  AVID BINS: {avid_bins}")
         else:
-            print(f"⚠️  No primary bin returned in response")
+            print(f"⚠️  No avid bins returned in response")
         
         update_data = {
             FIELD_MAPPING["description"]: content.get("description") or content.get("Description", "Error: No description returned."),
             FIELD_MAPPING["date"]: content.get("date") or content.get("Date", ""),
             FIELD_MAPPING["tags_list"]: tags_for_fm,
-            FIELD_MAPPING["primary_bin"]: primary_bin
+            FIELD_MAPPING["avid_bins"]: avid_bins
         }
         
         print(f"DEBUG: Update data: {update_data}")
