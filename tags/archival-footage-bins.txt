@@ -1,35 +1,36 @@
 # ARCHIVAL BINS
-# Generated: 2025-11-14 06:00:02
-# Total bins: 31
+# Generated: 2025-11-15 06:00:03
+# Total bins: 32
 #
 Animals
 Black Life
-Black soldiers
+Black Soldiers
 Bodies of Water
+Churches
 Dirt
 Education
-Factory Work
+Factory Working
 Farming
-Field
-Forest
-Harbor
+Fields
+Forests
 Insects
 Landmarks
+Landscapes
 Massacres
-Moody Landscapes
-New York
+Military
+Newsreels
+Planes
 Plants
-Road
+Presidents
+Roads
 Schools
-Sharecroppers
+Sharecropping
 Ships
 Street Scenes
 Swamps
 The Great Depression
-Train
+Trains
 W.E.B Du Bois
-WWI
-Washington DC
 Waterfalls
 White Life
-White Supremecist Ideology
+White Supremacist Ideology

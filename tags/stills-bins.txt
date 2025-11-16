@@ -1,5 +1,5 @@
 # STILLS BINS
-# Generated: 2025-11-14 06:00:02
+# Generated: 2025-11-15 06:00:03
 # Total bins: 83
 #
 Abolitionists
@@ -62,6 +62,7 @@ Political Cartoons
 Presidents
 Prisoners
 Pullman Porters
+Racial Apethets
 Red Summer 1919
 Rice Fields
 Rivers
@@ -84,4 +85,3 @@ Union League
 W.E.B. DuBois
 WWI
 Washington DC
-White Supremacists

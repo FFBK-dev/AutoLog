@@ -1,78 +1,56 @@
 # LIVE BINS
-# Generated: 2025-11-14 06:00:02
-# Total bins: 74
+# Generated: 2025-11-15 06:00:03
+# Total bins: 52
 #
 Animals
-Bay_Harbor
 Bodies of Water
 Brick Baptist Church
 Bridges
 Buildings_Misc
-Campfire
-Candle
+Campfires
+Candles
 Cannons
 Canyon
-Cemetary
+Cemetaries
 Chapel of Ease
-Church
-Church Ruins
-Church_Exterior
-Church_Interior
+Churches
 Coosaw Island General
-Creek
 Cuthbert-Simmer House
 Desert
 Edisto Island General
-Enslaved Cabin
-Enslaved Cabin_Exterior
-Enslaved Cabin_Interior
+Enslaved Cabins
 Farms_Crops
-Field_Fences
-Field_Grass
+Fields
 Green-Meldrim House
 Grove Plantation
-House
-House_Exterior
-House_Interior
-Indigenous Home
-Indigenous Home_Exterior
-Indigenous Home_Interior
+Houses_Misc
+Indigenous Homes
 James Island General
 Joseph Johnson House
 Lafargue Cemetary
 Lafayette, LA General
-Lake
 Landmarks
 Marsh_Wetlands
 McLeod Plantation
 Moon
 Mountains
-Ocean
 Old Sheldon Church
 Old State Capitol
 Parade
 Peabody High
-Plantation House
-Pond
+Plantation Houses
 Port Royal Island General
-Prairie
-Puddles
 Railroads
-Rain_Dripping Water
-River
 Roads
 Robert Smalls House
 Rocks
-Ship
+Ships
 Sky
 South Carolina State House
 St. Helena's Island General
 St. Helena’s Church
 Statues
 Sun
-Sun_2
-Sunrise
-Sunset
 Swamp
-Torch
+Torches
 Trees_Plants
