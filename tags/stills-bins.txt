@@ -1,6 +1,6 @@
 # STILLS BINS
-# Generated: 2025-11-17 06:00:00
-# Total bins: 83
+# Generated: 2025-11-18 06:00:04
+# Total bins: 84
 #
 Abolitionists
 Abraham Lincoln
@@ -12,6 +12,7 @@ Black Families
 Black Neighborhoods
 Black Politicans
 Black Press
+Black Professionals
 Black Soldiers
 Black Towns
 Booker T. Washington
@@ -47,7 +48,7 @@ Manumission
 Maps
 Mary Armstrong
 Massacres
-Millworkers
+Millwork
 Mississippi
 Mound Bayou, MS
 NAACP
