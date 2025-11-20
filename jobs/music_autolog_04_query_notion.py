@@ -23,6 +23,7 @@ FIELD_MAPPING = {
     "url": "SPECS_URL",
     "performed_by": "INFO_PerformedBy",
     "composer": "PUBLISHING_Composer",
+    "mood": "INFO_MOOD",
     "status": "AutoLog_Status"
 }
 
@@ -107,6 +108,7 @@ def query_notion_database(title, artist=None, album=None):
             notion_url = extract_notion_text(properties.get('URL', {}))
             notion_performed_by = extract_notion_text(properties.get('Performed By', {}))
             notion_composer = extract_notion_text(properties.get('Composer', {}))
+            notion_mood = extract_notion_text(properties.get('Mood/Keywords', {}))
             
             # Extract additional fields for tiebreaking
             notion_release_date = properties.get('Release Date', {}).get('number', '')
@@ -121,6 +123,7 @@ def query_notion_database(title, artist=None, album=None):
             print(f"     Notion URL: {notion_url}")
             print(f"     Notion Performed By: {notion_performed_by}")
             print(f"     Notion Composer: {notion_composer}")
+            print(f"     Notion Mood/Keywords: {notion_mood}")
             
             # Calculate match confidence
             confidence = 0
@@ -167,7 +170,7 @@ def query_notion_database(title, artist=None, album=None):
             if notion_track_number:
                 tiebreaker_score += 1
             
-            # Store match with all metadata
+            # Store match with all metadata (including page ID for Notion updates)
             match_data = {
                 'title': notion_title,
                 'artist': notion_artist,
@@ -177,11 +180,13 @@ def query_notion_database(title, artist=None, album=None):
                 'url': notion_url,
                 'performed_by': notion_performed_by,
                 'composer': notion_composer,
+                'mood': notion_mood,
                 'confidence': confidence,
                 'tiebreaker_score': tiebreaker_score,
                 'is_exact_title': is_exact_title,
                 'release_date': notion_release_date,
-                'track_number': notion_track_number
+                'track_number': notion_track_number,
+                'page_id': result.get('id', '')  # Store Notion page ID for updates
             }
             all_matches.append(match_data)
             
@@ -221,6 +226,7 @@ def query_notion_database(title, artist=None, album=None):
             print(f"     URL: {best_match['url']}")
             print(f"     Performed By: {best_match['performed_by']}")
             print(f"     Composer: {best_match['composer']}")
+            print(f"     Mood/Keywords: {best_match['mood']}")
             print(f"     Exact title match: {'Yes' if best_match['is_exact_title'] else 'No'}")
             
             return best_match, f"Match found (confidence: {match_confidence}%)"
@@ -239,6 +245,53 @@ def query_notion_database(title, artist=None, album=None):
         import traceback
         traceback.print_exc()
         return None, f"Error: {str(e)}"
+
+def update_notion_imported_status(page_id):
+    """Update Notion page to mark as imported to FileMaker."""
+    try:
+        if not page_id:
+            print(f"  -> No Notion page ID available, skipping import status update")
+            return False
+        
+        print(f"  -> Updating Notion: Checking 'Imported to FM' checkbox...")
+        
+        # Notion API endpoint for updating a page
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        
+        headers = {
+            "Authorization": f"Bearer {NOTION_KEY}",
+            "Content-Type": "application/json",
+            "Notion-Version": NOTION_VERSION
+        }
+        
+        # Update the "Imported to FM" checkbox property
+        payload = {
+            "properties": {
+                "Imported to FM": {
+                    "checkbox": True
+                }
+            }
+        }
+        
+        response = requests.patch(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"  -> ✅ Notion page updated: 'Imported to FM' checked")
+            return True
+        else:
+            print(f"  -> ⚠️  Failed to update Notion page: {response.status_code}")
+            print(f"     Response: {response.text[:200]}")
+            return False
+            
+    except requests.exceptions.Timeout:
+        print(f"  -> ⚠️  Notion API timeout while updating import status")
+        return False
+    except requests.exceptions.ConnectionError as e:
+        print(f"  -> ⚠️  Notion API connection error: {e}")
+        return False
+    except Exception as e:
+        print(f"  -> ⚠️  Error updating Notion import status: {e}")
+        return False
 
 def extract_notion_text(property_obj):
     """Extract text from various Notion property types."""
@@ -310,6 +363,7 @@ def query_notion_for_isrc(music_id, token):
         current_url = record_data.get(FIELD_MAPPING["url"], "")
         current_performed_by = record_data.get(FIELD_MAPPING["performed_by"], "")
         current_composer = record_data.get(FIELD_MAPPING["composer"], "")
+        current_mood = record_data.get(FIELD_MAPPING["mood"], "")
         
         print(f"  -> Song: {song_name}")
         print(f"  -> Artist: {artist}")
@@ -319,6 +373,7 @@ def query_notion_for_isrc(music_id, token):
         print(f"  -> Current URL: {current_url or '(empty)'}")
         print(f"  -> Current Performed By: {current_performed_by or '(empty)'}")
         print(f"  -> Current Composer: {current_composer or '(empty)'}")
+        print(f"  -> Current Mood/Keywords: {current_mood or '(empty)'}")
         
         # Check if we should skip (all fields already populated)
         has_isrc = current_isrc and current_isrc.strip()
@@ -326,8 +381,9 @@ def query_notion_for_isrc(music_id, token):
         has_url = current_url and current_url.strip()
         has_performed_by = current_performed_by and current_performed_by.strip()
         has_composer = current_composer and current_composer.strip()
+        has_mood = current_mood and current_mood.strip()
         
-        if has_isrc and has_type and has_url and has_performed_by and has_composer:
+        if has_isrc and has_type and has_url and has_performed_by and has_composer and has_mood:
             print(f"  -> All Notion fields already populated in FileMaker, skipping query")
             print(f"✅ Step 4 complete: Notion data already populated")
             return True
@@ -367,12 +423,30 @@ def query_notion_for_isrc(music_id, token):
                 update_data[FIELD_MAPPING["composer"]] = notion_match['composer'].strip()
                 print(f"     Composer: {notion_match['composer']}")
             
+            if not has_mood and notion_match.get('mood'):
+                update_data[FIELD_MAPPING["mood"]] = notion_match['mood'].strip()
+                print(f"     Mood/Keywords: {notion_match['mood']}")
+            
             if update_data:
                 config.update_record(token, "Music", record_id, update_data)
                 print(f"  -> FileMaker record updated with {len(update_data)} field(s) from Notion")
+                
+                # Update Notion to mark as imported to FileMaker
+                notion_page_id = notion_match.get('page_id', '')
+                if notion_page_id:
+                    update_notion_imported_status(notion_page_id)
+                else:
+                    print(f"  -> ⚠️  No Notion page ID available to update import status")
+                
                 print(f"✅ Step 4 complete: Data retrieved from Notion ({match_info})")
             else:
                 print(f"  -> No new data to update (all fields already populated)")
+                
+                # Still update Notion if we have a match (data was already synced previously)
+                notion_page_id = notion_match.get('page_id', '')
+                if notion_page_id:
+                    update_notion_imported_status(notion_page_id)
+                
                 print(f"✅ Step 4 complete: Notion match found but no updates needed")
             
             return True

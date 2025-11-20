@@ -1,6 +1,6 @@
 # STILLS BINS
-# Generated: 2025-11-18 06:00:04
-# Total bins: 84
+# Generated: 2025-11-19 06:00:00
+# Total bins: 83
 #
 Abolitionists
 Abraham Lincoln
@@ -22,6 +22,7 @@ Churches
 Civil War
 Colfax Massacre
 Comite des Citoyens
+Contraband
 Cotton FIelds
 Diaries
 Economy Hall
@@ -63,12 +64,10 @@ Political Cartoons
 Presidents
 Prisoners
 Pullman Porters
-Racial Apethets
 Red Summer 1919
 Rice Fields
 Rivers
 Robert E. Lee
-Robert Smalls
 Schools
 Sea Islands
 Segregation

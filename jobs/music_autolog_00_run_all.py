@@ -54,6 +54,7 @@ FIELD_MAPPING = {
     "copyright": "INFO_Copyright",
     "cue_type": "INFO_Cue_Type",
     "url": "SPECS_URL",
+    "mood": "INFO_MOOD",
     
     # Raw metadata storage
     "metadata": "INFO_Metadata",

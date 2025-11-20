@@ -114,8 +114,9 @@ The multi-tool approach handles all common audio formats:
 2. Queries Notion database by song title
 3. Confirms match by comparing artist and album
 4. Calculates match confidence score (0-100%)
-5. If confidence ≥ 50%, retrieves ISRC/UPC from Notion
-6. Updates FileMaker with the ISRC/UPC code
+5. If confidence ≥ 50%, retrieves data from Notion
+6. Updates FileMaker with the retrieved data
+7. **NEW:** Updates Notion to check "Imported to FM" checkbox after successful sync ✅
 
 **Match Confidence Algorithm:**
 - **Exact title match:** +50 points
@@ -129,6 +130,7 @@ The multi-tool approach handles all common audio formats:
 - ✅ Continues workflow even if no match found (not a failure)
 - ✅ Logs match confidence and reasoning
 - ✅ Handles Notion API errors gracefully
+- ✅ **NEW:** Updates Notion "Imported to FM" checkbox after successful FileMaker sync
 
 **Notion Properties Used:**
 - `Track Title` (title) - Song title
@@ -139,6 +141,7 @@ The multi-tool approach handles all common audio formats:
 - `URL` (url) - Source URL (e.g., Apple Music link) → `SPECS_URL` ✅ **NEW**
 - `Performed By` (rich_text) - Performer name → `INFO_PerformedBy` ✅ **NEW**
 - `Composer` (rich_text) - Composer name → `PUBLISHING_Composer` ✅ **NEW**
+- `Mood/Keywords` (multi_select) - Mood and keywords → `INFO_MOOD` ✅ **NEW**
 
 **Configuration:**
 The script uses environment variables (with defaults):
