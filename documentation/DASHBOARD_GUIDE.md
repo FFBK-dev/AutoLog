@@ -51,7 +51,7 @@ Real-time metrics across all workflows:
 Clean, unified table showing all activity with the following columns:
 
 #### 1. FileMaker ID
-The record identifier from FileMaker (e.g., `S12345`, `LF1554`, `FTG001`, `MX042`)
+The record identifier from FileMaker (e.g., `S12345`, `LF1554`, `FTG001`, `EM0042`)
 - Bold, monospace font for easy scanning
 - Shows `-` if no ID available
 
@@ -166,7 +166,7 @@ Jobs are ordered by importance:
 
 ### Music AutoLog
 - **Media Type**: Music (Green)
-- **FileMaker ID**: MX042
+- **FileMaker ID**: EM0042
 - **Typical Jobs**: `music_autolog_00_run_all`
 
 ### Metadata Bridge

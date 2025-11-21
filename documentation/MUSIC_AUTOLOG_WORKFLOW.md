@@ -25,15 +25,28 @@ The workflow uses the `AutoLog_Status` field to track progress:
 
 - Retrieves the file path from `SPECS_Filepath_Server`
 - **NEW:** Stores the original filename in `SPECS_Filepath_Import` (if not already set)
-- Prepends the `INFO_MUSIC_ID` to the filename
-- Example: `Band of Gideon.wav` → `MX001_Band of Gideon.wav`
+- **Parses filename format:** `Artist__Song Title.wav` (double underscore `__`)
+- **Replaces artist name** (everything before `__`) with `INFO_MUSIC_ID`
+- Example: `Oasis__Wonderwall.wav` → `EM0006_Wonderwall.wav`
+- **Fallback:** If no `__` found, tries single `_` (backwards compatibility)
 - Updates FileMaker with the new file path
 - Skips renaming if file already has the ID prefix
+- **Fallback:** If no underscore found, prepends ID to entire filename
 
 **Original Filename Preservation:**
 - Extracts original filename by removing ID prefix if present
 - Stores in `SPECS_Filepath_Import` for reference
-- Example: `MX001_Band of Gideon.wav` → `SPECS_Filepath_Import` = `Band of Gideon.wav`
+- Example: `EM0006_Wonderwall.wav` → `SPECS_Filepath_Import` = `Oasis_Wonderwall.wav` (original)
+
+**Filename Format:**
+- **Standard convention:** `Artist__Song Title.wav` (double underscore `__`)
+- **Renaming logic:** Replaces artist name (before `__`) with Music ID
+- **Examples:**
+  - `Oasis__Wonderwall.wav` → `EM0006_Wonderwall.wav`
+  - `The Beatles__Hey Jude.wav` → `EM0007_Hey Jude.wav`
+  - `Artist Name__Song Title.wav` → `EM0008_Song Title.wav`
+- **Why double underscore?** Conversion software may change special characters (`?`, `/`) to `_`, so `__` ensures safe parsing
+- **Fallback:** Single `_` format still supported for backwards compatibility
 
 **Import Timestamp Tracking:**
 - Captures the current date/time when the file is processed
@@ -131,6 +144,7 @@ The multi-tool approach handles all common audio formats:
 - ✅ Logs match confidence and reasoning
 - ✅ Handles Notion API errors gracefully
 - ✅ **NEW:** Updates Notion "Imported to FM" checkbox after successful FileMaker sync
+- ✅ **NEW:** Updates Notion "EM#" field with Music ID (e.g., "EM0006") after successful sync
 
 **Notion Properties Used:**
 - `Track Title` (title) - Song title
@@ -210,9 +224,9 @@ Process a specific Music ID:
 python3 -c "import config; print(config.get_token())"
 
 # Run individual steps
-python3 jobs/music_autolog_01_rename_file.py MX001 <token>
-python3 jobs/music_autolog_02_extract_specs.py MX001 <token>
-python3 jobs/music_autolog_03_parse_metadata.py MX001 <token>
+python3 jobs/music_autolog_01_rename_file.py EM0001 <token>
+python3 jobs/music_autolog_02_extract_specs.py EM0001 <token>
+python3 jobs/music_autolog_03_parse_metadata.py EM0001 <token>
 ```
 
 ### API Integration
@@ -287,7 +301,7 @@ python3 temp/test_music_autolog.py
 
 **Prerequisites:**
 1. Create a test record in FileMaker Music layout
-2. Set `INFO_MUSIC_ID` (e.g., "MX001")
+2. Set `INFO_MUSIC_ID` (e.g., "EM0001")
 3. Set `SPECS_Filepath_Server` to a test file path:
    ```
    /Volumes/6 E2E/15 Music/1 Original Files/251015/E2E - SOURCE MX/Band of Gideon.wav
@@ -349,10 +363,17 @@ Set up a cron job or scheduled task to run the workflow periodically:
 
 ### Common Issues
 
+**"No file path found in SPECS_Filepath_Server"**
+- **Race Condition Fix:** The workflow now includes automatic retry logic (up to 10 seconds) to wait for FileMaker to populate the file path field during large batch imports
+- **Why this happens:** When importing 90+ files at once, FileMaker may take time to process all imports and populate the `SPECS_Filepath_Server` field. The workflow previously failed immediately if the field was empty
+- **Solution:** The workflow now retries checking for the file path every 1 second for up to 10 seconds before failing
+- **If still failing:** Verify the file was actually imported into FileMaker and check that the import process completed
+
 **"File not found at path"**
 - Verify the file path in `SPECS_Filepath_Server` is correct
 - Ensure the SMB volume is mounted: `/Volumes/6 E2E/`
 - Check file permissions
+- Note: This error occurs after the file path is found, so it's different from the "No file path found" error above
 
 **"No metadata found"**
 - Some files may not have embedded metadata
@@ -368,6 +389,28 @@ Set up a cron job or scheduled task to run the workflow periodically:
 - Large files may take longer to process
 - Check network connectivity to SMB volume
 - Consider increasing timeout in workflow step configuration
+
+### Batch Import Timing Issues
+
+**Problem:** Files fail when imported in large batches (90+ files) but succeed when imported individually.
+
+**Root Causes:**
+1. **Race Condition:** FileMaker needs time to populate the `SPECS_Filepath_Server` field after importing files. In large batches, this can take several seconds. The workflow was running immediately and failing because the field was still empty.
+2. **Long/Complex Filenames:** Files with very long filenames (120+ characters) or special characters (commas, ampersands, parentheses, brackets) can cause FileMaker to take longer processing the import and populating the file path field.
+
+**Solution:** Added enhanced retry logic to all workflow steps that require the file path:
+- Step 1 (Rename File): Waits up to 15 seconds for file path to be populated (increased from 10 seconds)
+- Step 2 (Extract Specs): Waits up to 15 seconds for file path to be populated
+- Step 3 (Parse Metadata): Waits up to 15 seconds for file path to be populated
+
+**Why individual imports work:** When importing files one at a time, FileMaker has less load and can populate fields more quickly, so the workflow doesn't encounter the race condition.
+
+**Filename Complexity:** Files with names like `Abel Selaocoe, Aurora Orchestra, Nicholas Collon & Bernhard Schimpelsberger__Four Spirits (Orch. Woodgates)_ I. MaSebego [Live].wav` may require additional processing time due to:
+- Length (120+ characters for filename alone)
+- Special characters (commas, `&`, parentheses, brackets)
+- Full path length (may approach FileMaker field limits)
+
+The enhanced retry logic now provides better diagnostics and waits longer for complex filenames.
 
 ### Debug Mode
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import json
 import os
+import time
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -55,13 +56,32 @@ def extract_file_specs(music_id, token):
         )
         print(f"  -> Record ID: {record_id}")
         
-        # Get file path
-        record_data = config.get_record(token, "Music", record_id)
-        filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+        # Get file path with retry logic (handles race condition where FileMaker
+        # hasn't finished populating the field during large batch imports)
+        # Also handles cases where long filenames or special characters cause FileMaker
+        # to take longer processing the import
+        filepath = ""
+        max_retries = 15  # Wait up to 15 seconds for file path to be populated (increased for complex filenames)
+        retry_delay = 1.0  # Check every 1 second
         
-        if not filepath:
-            print(f"  -> ERROR: No file path found in SPECS_Filepath_Server")
-            return False
+        for attempt in range(max_retries):
+            record_data = config.get_record(token, "Music", record_id)
+            filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+            
+            if filepath and filepath.strip():
+                # File path found, proceed
+                break
+            
+            if attempt < max_retries - 1:
+                print(f"  -> Waiting for file path to be populated (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(retry_delay)
+            else:
+                print(f"  -> ERROR: No file path found in SPECS_Filepath_Server after {max_retries} attempts")
+                print(f"  -> Possible causes:")
+                print(f"     - FileMaker is still processing a large batch import")
+                print(f"     - Filename is too long or contains problematic special characters")
+                print(f"     - File import failed or was incomplete")
+                return False
         
         print(f"  -> File path: {filepath}")
         

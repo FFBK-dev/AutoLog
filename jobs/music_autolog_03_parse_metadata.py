@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import json
 import os
+import time
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -254,13 +255,32 @@ def extract_metadata(music_id, token):
         )
         print(f"  -> Record ID: {record_id}")
         
-        # Get file path
-        record_data = config.get_record(token, "Music", record_id)
-        filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+        # Get file path with retry logic (handles race condition where FileMaker
+        # hasn't finished populating the field during large batch imports)
+        # Also handles cases where long filenames or special characters cause FileMaker
+        # to take longer processing the import
+        filepath = ""
+        max_retries = 15  # Wait up to 15 seconds for file path to be populated (increased for complex filenames)
+        retry_delay = 1.0  # Check every 1 second
         
-        if not filepath:
-            print(f"  -> ERROR: No file path found in SPECS_Filepath_Server")
-            return False
+        for attempt in range(max_retries):
+            record_data = config.get_record(token, "Music", record_id)
+            filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+            
+            if filepath and filepath.strip():
+                # File path found, proceed
+                break
+            
+            if attempt < max_retries - 1:
+                print(f"  -> Waiting for file path to be populated (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(retry_delay)
+            else:
+                print(f"  -> ERROR: No file path found in SPECS_Filepath_Server after {max_retries} attempts")
+                print(f"  -> Possible causes:")
+                print(f"     - FileMaker is still processing a large batch import")
+                print(f"     - Filename is too long or contains problematic special characters")
+                print(f"     - File import failed or was incomplete")
+                return False
         
         print(f"  -> File path: {filepath}")
         
@@ -301,6 +321,35 @@ def extract_metadata(music_id, token):
         
         # Handle ISRC/UPC (could be separate or not present)
         isrc_upc = merged.get('isrc', '') or merged.get('upc', '')
+        
+        # FALLBACK: Extract song title from filename if metadata doesn't have title
+        if not song_name or not song_name.strip():
+            print(f"  -> No title in metadata, attempting to extract from filename...")
+            filename = Path(filepath).name
+            # Remove extension
+            filename_no_ext = Path(filename).stem
+            
+            # Check if filename follows "EM####_Song Title" format (after renaming)
+            if "_" in filename_no_ext:
+                # Split on first underscore
+                parts = filename_no_ext.split("_", 1)
+                if len(parts) == 2:
+                    # Check if first part looks like a Music ID (EM####)
+                    first_part = parts[0]
+                    if first_part.startswith("EM") and len(first_part) >= 5:
+                        # Extract song title (everything after Music ID)
+                        song_name = parts[1]
+                        print(f"  -> Extracted song title from filename: {song_name}")
+                    elif "__" in filename_no_ext:
+                        # Check for double underscore format (original format)
+                        parts_double = filename_no_ext.split("__", 1)
+                        if len(parts_double) == 2:
+                            song_name = parts_double[1]
+                            print(f"  -> Extracted song title from filename (double underscore): {song_name}")
+            else:
+                # No underscore - use entire filename (minus extension) as title
+                song_name = filename_no_ext
+                print(f"  -> Using entire filename as song title: {song_name}")
         
         # Extract just year if date is longer
         if release_year and len(str(release_year)) > 4:

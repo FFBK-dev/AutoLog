@@ -3,6 +3,7 @@ import sys
 import warnings
 from pathlib import Path
 import os
+import time
 from datetime import datetime
 
 # Suppress urllib3 LibreSSL warning
@@ -35,15 +36,44 @@ def rename_file_with_id_prefix(music_id, token):
         )
         print(f"  -> Record ID: {record_id}")
         
-        # Get current file path
-        record_data = config.get_record(token, "Music", record_id)
-        current_filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
-        current_import_path = record_data.get(FIELD_MAPPING["filepath_import"], "")
-        current_import_timestamp = record_data.get(FIELD_MAPPING["import_timestamp"], "")
+        # Get current file path with retry logic (handles race condition where FileMaker
+        # hasn't finished populating the field during large batch imports)
+        # Also handles cases where long filenames or special characters cause FileMaker
+        # to take longer processing the import
+        current_filepath = ""
+        current_import_path = ""
+        current_import_timestamp = ""
+        max_retries = 15  # Wait up to 15 seconds for file path to be populated (increased for complex filenames)
+        retry_delay = 1.0  # Check every 1 second
         
-        if not current_filepath:
-            print(f"  -> ERROR: No file path found in SPECS_Filepath_Server")
-            return False
+        for attempt in range(max_retries):
+            record_data = config.get_record(token, "Music", record_id)
+            current_filepath = record_data.get(FIELD_MAPPING["filepath_server"], "")
+            current_import_path = record_data.get(FIELD_MAPPING["filepath_import"], "")
+            current_import_timestamp = record_data.get(FIELD_MAPPING["import_timestamp"], "")
+            
+            if current_filepath and current_filepath.strip():
+                # File path found, proceed
+                # Log if it took multiple attempts (indicates potential filename complexity issue)
+                if attempt > 0:
+                    path_length = len(current_filepath)
+                    filename = Path(current_filepath).name
+                    print(f"  -> File path populated after {attempt + 1} attempts")
+                    print(f"  -> Path length: {path_length} characters, Filename: {filename[:80]}{'...' if len(filename) > 80 else ''}")
+                break
+            
+            if attempt < max_retries - 1:
+                print(f"  -> Waiting for file path to be populated (attempt {attempt + 1}/{max_retries})...")
+                print(f"  -> This may take longer for files with long names or special characters")
+                time.sleep(retry_delay)
+            else:
+                print(f"  -> ERROR: No file path found in SPECS_Filepath_Server after {max_retries} attempts")
+                print(f"  -> Possible causes:")
+                print(f"     - FileMaker is still processing a large batch import")
+                print(f"     - Filename is too long or contains problematic special characters")
+                print(f"     - File import failed or was incomplete")
+                print(f"  -> Check FileMaker to verify the file was actually imported")
+                return False
         
         print(f"  -> Current path: {current_filepath}")
         
@@ -53,8 +83,12 @@ def rename_file_with_id_prefix(music_id, token):
             current_filename = Path(current_filepath).name
             
             # Extract original filename (remove ID prefix if present)
+            # Check for both single and double underscore formats
             if current_filename.startswith(f"{music_id}_"):
+                # Remove Music ID prefix (single underscore format)
                 original_filename = current_filename[len(f"{music_id}_"):]
+                # If it was originally double underscore format, restore it
+                # We can't perfectly restore, but we'll keep the extracted name
                 print(f"  -> Extracted original filename (removed ID prefix): {original_filename}")
             else:
                 original_filename = current_filename
@@ -95,8 +129,40 @@ def rename_file_with_id_prefix(music_id, token):
             print(f"  -> Skipping rename operation")
             return True
         
-        # Create new filename with music_id prefix
-        new_filename = f"{music_id}_{filename}"
+        # Parse filename: Extract artist (before "__") and song title (after "__")
+        # Standard format: "Artist__Song Title.wav" (double underscore)
+        if "__" in filename:
+            # Split on double underscore
+            parts = filename.split("__", 1)
+            original_artist = parts[0]
+            song_title_with_ext = parts[1]
+            
+            print(f"  -> Original filename format detected: Artist__Song (double underscore)")
+            print(f"  -> Original artist: {original_artist}")
+            print(f"  -> Song title: {song_title_with_ext}")
+            
+            # Replace artist with music_id (output uses single underscore)
+            new_filename = f"{music_id}_{song_title_with_ext}"
+            print(f"  -> Replacing artist '{original_artist}' with Music ID '{music_id}'")
+        elif "_" in filename:
+            # Fallback: Single underscore (old format for backwards compatibility)
+            parts = filename.split("_", 1)
+            original_artist = parts[0]
+            song_title_with_ext = parts[1]
+            
+            print(f"  -> ⚠️  Single underscore detected (old format) - using fallback")
+            print(f"  -> Original artist: {original_artist}")
+            print(f"  -> Song title: {song_title_with_ext}")
+            
+            # Replace artist with music_id
+            new_filename = f"{music_id}_{song_title_with_ext}"
+            print(f"  -> Replacing artist '{original_artist}' with Music ID '{music_id}'")
+        else:
+            # Final fallback: No underscore found, prepend music_id
+            print(f"  -> ⚠️  No underscore found in filename - using fallback (prepend ID)")
+            print(f"  -> Filename doesn't match 'Artist__Song Title.wav' format")
+            new_filename = f"{music_id}_{filename}"
+        
         new_filepath = directory / new_filename
         
         print(f"  -> New filename: {new_filename}")

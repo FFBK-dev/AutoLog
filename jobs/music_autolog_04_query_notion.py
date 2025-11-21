@@ -246,14 +246,14 @@ def query_notion_database(title, artist=None, album=None):
         traceback.print_exc()
         return None, f"Error: {str(e)}"
 
-def update_notion_imported_status(page_id):
-    """Update Notion page to mark as imported to FileMaker."""
+def update_notion_imported_status(page_id, music_id):
+    """Update Notion page to mark as imported to FileMaker and add Music ID."""
     try:
         if not page_id:
             print(f"  -> No Notion page ID available, skipping import status update")
             return False
         
-        print(f"  -> Updating Notion: Checking 'Imported to FM' checkbox...")
+        print(f"  -> Updating Notion: Checking 'Imported to FM' checkbox and adding Music ID...")
         
         # Notion API endpoint for updating a page
         url = f"https://api.notion.com/v1/pages/{page_id}"
@@ -264,7 +264,7 @@ def update_notion_imported_status(page_id):
             "Notion-Version": NOTION_VERSION
         }
         
-        # Update the "Imported to FM" checkbox property
+        # Prepare update payload
         payload = {
             "properties": {
                 "Imported to FM": {
@@ -273,14 +273,38 @@ def update_notion_imported_status(page_id):
             }
         }
         
+        # Add Music ID to EM# field if provided
+        if music_id:
+            # Try to determine the property type - could be title, rich_text, or text
+            # We'll try rich_text first (most common for ID fields)
+            payload["properties"]["EM#"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": music_id
+                        }
+                    }
+                ]
+            }
+            print(f"  -> Adding Music ID '{music_id}' to Notion 'EM#' field")
+        
         response = requests.patch(url, headers=headers, json=payload, timeout=10)
         
         if response.status_code == 200:
             print(f"  -> ✅ Notion page updated: 'Imported to FM' checked")
+            if music_id:
+                print(f"  -> ✅ Notion 'EM#' field updated with: {music_id}")
             return True
         else:
             print(f"  -> ⚠️  Failed to update Notion page: {response.status_code}")
             print(f"     Response: {response.text[:200]}")
+            # Try to parse error for more details
+            try:
+                error_data = response.json()
+                if 'message' in error_data:
+                    print(f"     Error: {error_data['message']}")
+            except:
+                pass
             return False
             
     except requests.exceptions.Timeout:
@@ -431,10 +455,10 @@ def query_notion_for_isrc(music_id, token):
                 config.update_record(token, "Music", record_id, update_data)
                 print(f"  -> FileMaker record updated with {len(update_data)} field(s) from Notion")
                 
-                # Update Notion to mark as imported to FileMaker
+                # Update Notion to mark as imported to FileMaker and add Music ID
                 notion_page_id = notion_match.get('page_id', '')
                 if notion_page_id:
-                    update_notion_imported_status(notion_page_id)
+                    update_notion_imported_status(notion_page_id, music_id)
                 else:
                     print(f"  -> ⚠️  No Notion page ID available to update import status")
                 
@@ -445,7 +469,7 @@ def query_notion_for_isrc(music_id, token):
                 # Still update Notion if we have a match (data was already synced previously)
                 notion_page_id = notion_match.get('page_id', '')
                 if notion_page_id:
-                    update_notion_imported_status(notion_page_id)
+                    update_notion_imported_status(notion_page_id, music_id)
                 
                 print(f"✅ Step 4 complete: Notion match found but no updates needed")
             
