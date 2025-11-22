@@ -1,6 +1,6 @@
 # STILLS BINS
-# Generated: 2025-11-20 06:00:05
-# Total bins: 83
+# Generated: 2025-11-21 06:00:03
+# Total bins: 81
 #
 Abolitionists
 Abraham Lincoln
@@ -20,7 +20,6 @@ Buildings
 Chicago
 Churches
 Civil War
-Colfax Massacre
 Comite des Citoyens
 Contraband
 Cotton FIelds
@@ -47,7 +46,6 @@ Letters
 Lynchings
 Manumission
 Maps
-Mary Armstrong
 Massacres
 Millwork
 Mississippi

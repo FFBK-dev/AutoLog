@@ -1,6 +1,6 @@
 # LIVE BINS
-# Generated: 2025-11-20 06:00:05
-# Total bins: 52
+# Generated: 2025-11-21 06:00:04
+# Total bins: 56
 #
 Animals
 Bodies of Water
@@ -17,6 +17,8 @@ Churches
 Coosaw Island General
 Cuthbert-Simmer House
 Desert
+Dutch Ford Cotton Farm
+Ebenezer Creek
 Edisto Island General
 Enslaved Cabins
 Farms_Crops
@@ -34,6 +36,7 @@ Marsh_Wetlands
 McLeod Plantation
 Moon
 Mountains
+Myrtle Grove Plantation
 Old Sheldon Church
 Old State Capitol
 Parade
@@ -54,3 +57,4 @@ Sun
 Swamp
 Torches
 Trees_Plants
+Turnage POV
