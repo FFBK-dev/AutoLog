@@ -201,6 +201,7 @@ FOOTAGE_FIELD_MAPPING = {
     "info_ff_project": "INFO_FF_Project",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
     "avid_bins": "INFO_AvidBins",
+    "time_of_day": "SPECS_TimeOfDay",
     "autolog_status": "AutoLog_Status"
 }
 
@@ -419,6 +420,9 @@ def update_footage_metadata(assets, token, layout_name):
             
             if metadata.get("avid_bins"):
                 field_data[FOOTAGE_FIELD_MAPPING["avid_bins"]] = metadata["avid_bins"]
+            
+            if metadata.get("time_of_day"):
+                field_data[FOOTAGE_FIELD_MAPPING["time_of_day"]] = metadata["time_of_day"]
             
             # Note: INFO_Name field doesn't exist in FileMaker Footage layout
             # INFO_Title DOES exist in Footage layout, so it will be updated

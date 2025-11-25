@@ -266,7 +266,8 @@ FOOTAGE_FIELD_MAPPING = {
     "info_avid_description": "INFO_AvidDescription",
     "info_ff_project": "INFO_FF_Project",
     "info_reviewed_checkbox": "INFO_Reviewed_Checkbox",
-    "avid_bins": "INFO_AvidBins"
+    "avid_bins": "INFO_AvidBins",
+    "time_of_day": "SPECS_TimeOfDay"
 }
 
 def get_stills_metadata(stills_ids, token):
@@ -432,7 +433,8 @@ def get_footage_metadata(file_names, token, layout_name):
                         "info_avid_description": record_data.get(FOOTAGE_FIELD_MAPPING["info_avid_description"], ""),
                         "info_ff_project": record_data.get(FOOTAGE_FIELD_MAPPING["info_ff_project"], ""),
                         "info_reviewed_checkbox": convert_checkbox_to_text(record_data.get(FOOTAGE_FIELD_MAPPING["info_reviewed_checkbox"], "")),
-                        "info_avid_bins": record_data.get(FOOTAGE_FIELD_MAPPING["avid_bins"], "")
+                        "info_avid_bins": record_data.get(FOOTAGE_FIELD_MAPPING["avid_bins"], ""),
+                        "info_time_of_day": record_data.get(FOOTAGE_FIELD_MAPPING["time_of_day"], "")
                     }
                     
                     results.append(metadata)

@@ -67,6 +67,14 @@ FIELD_MAPPING = {
 # Define the complete workflow with status updates
 WORKFLOW_STEPS = [
     {
+        "step_num": 0,
+        "status_before": "0 - Pending File Info",
+        "status_after": "0 - Pending File Info",  # Status stays same, just converts file
+        "script": "music_autolog_00_convert_file.py",
+        "description": "Check and Convert Audio File",
+        "optional": True  # Don't fail workflow if conversion fails
+    },
+    {
         "step_num": 1,
         "status_before": "0 - Pending File Info",
         "status_after": "1 - File Renamed",
@@ -250,12 +258,15 @@ def run_workflow_step(step, music_id, record_id, token):
     script_name = step["script"]
     description = step["description"]
     is_final_step = step.get("final_status") is not None
+    is_optional = step.get("optional", False)
     
     print(f"--- Step {step_num}: {description} ---")
     print(f"  -> Processing music_id: {music_id}")
+    if is_optional:
+        print(f"  -> (Optional step - failure won't stop workflow)")
     
-    # For non-final steps, update status BEFORE running
-    if not is_final_step and step.get("status_after"):
+    # For non-final steps, update status BEFORE running (unless it's an optional step that doesn't change status)
+    if not is_final_step and step.get("status_after") and step["status_after"] != step.get("status_before"):
         print(f"  -> Updating status to: {step['status_after']} (before running step)")
         if not update_status(record_id, token, step["status_after"]):
             print(f"  -> WARNING: Failed to update status to '{step['status_after']}', but continuing workflow")
@@ -287,7 +298,7 @@ def run_workflow_step(step, music_id, record_id, token):
             print(f"  -> DEBUG MODE: Running subprocess with real-time output")
             result = subprocess.run(
                 ["python3", str(script_path), music_id, token], 
-                timeout=300  # 5 minute timeout
+                timeout=600 if is_optional else 300  # Longer timeout for conversion step
             )
             success = result.returncode == 0
             if success:
@@ -304,6 +315,19 @@ def run_workflow_step(step, music_id, record_id, token):
             else:
                 print(f"❌ Subprocess failed: {description} (Step {step_num}) on ID {music_id}")
                 print(f"  -> FAILURE: {script_name} failed with exit code {result.returncode} for {music_id}")
+                
+                # For optional steps, log error but don't fail workflow
+                if is_optional:
+                    print(f"  -> ⚠️  Optional step failed, but continuing workflow")
+                    error_msg = format_error_message(
+                        music_id,
+                        description,
+                        f"Script failed with exit code {result.returncode} (optional - continuing)",
+                        "Warning (Optional Step)"
+                    )
+                    write_error_to_console(record_id, token, error_msg)
+                    return True  # Continue workflow even if optional step fails
+                
                 error_msg = format_error_message(
                     music_id,
                     description,
@@ -338,6 +362,19 @@ def run_workflow_step(step, music_id, record_id, token):
         else:
             print(f"❌ Subprocess failed: {description} (Step {step_num}) on ID {music_id}")
             print(f"  -> FAILURE: {script_name} failed with exit code {result.returncode} for {music_id}")
+            
+            # For optional steps, log error but don't fail workflow
+            if is_optional:
+                print(f"  -> ⚠️  Optional step failed, but continuing workflow")
+                error_msg = format_error_message(
+                    music_id,
+                    description,
+                    f"Script failed with exit code {result.returncode} (optional - continuing)",
+                    "Warning (Optional Step)"
+                )
+                write_error_to_console(record_id, token, error_msg)
+                return True  # Continue workflow even if optional step fails
+            
             print(f"  -> RAW STDERR OUTPUT:")
             if result.stderr:
                 print(result.stderr)

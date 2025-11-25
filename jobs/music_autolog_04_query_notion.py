@@ -4,6 +4,8 @@ import warnings
 from pathlib import Path
 import requests
 import os
+import unicodedata
+import re
 
 # Suppress urllib3 LibreSSL warning
 warnings.filterwarnings('ignore', message='.*urllib3 v2 only supports OpenSSL 1.1.1+.*', category=Warning)
@@ -38,10 +40,67 @@ if not NOTION_KEY:
 if not NOTION_DB_ID:
     raise ValueError("NOTION_DB_ID environment variable is required")
 
+def remove_accents(text):
+    """Remove accents/diacritics from text for fuzzy matching."""
+    if not text:
+        return text
+    # Normalize to NFD (decomposed form) and remove combining diacritics
+    nfd = unicodedata.normalize('NFD', text)
+    return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
+
+def normalize_title_for_search(title):
+    """Create variations of title for searching, handling special character differences."""
+    if not title:
+        return []
+    
+    variations = [title]  # Start with original
+    
+    # Strategy 1: Remove accents for fuzzy matching (ä -> a, é -> e, etc.)
+    accent_free = remove_accents(title)
+    if accent_free not in variations and accent_free != title:
+        variations.append(accent_free)
+        print(f"     Variation (no accents): '{accent_free}'")
+    
+    # Strategy 2: Common character substitutions that might differ between FileMaker and Notion
+    # "_" in FileMaker might be "/" in Notion, etc.
+    substitutions = [
+        ("_", "/"),   # Underscore to slash
+        ("_", " "),   # Underscore to space
+        ("_", "-"),   # Underscore to dash
+        ("/", "_"),   # Slash to underscore
+        ("/", " "),   # Slash to space
+        ("-", "_"),   # Dash to underscore
+        ("-", " "),   # Dash to space
+    ]
+    
+    # Create variations by replacing characters
+    for old_char, new_char in substitutions:
+        if old_char in title:
+            variation = title.replace(old_char, new_char)
+            if variation not in variations:
+                variations.append(variation)
+            # Also try with accents removed
+            variation_no_accents = remove_accents(variation)
+            if variation_no_accents not in variations:
+                variations.append(variation_no_accents)
+    
+    # Strategy 3: Remove special characters entirely
+    cleaned = re.sub(r'[_\-\/]', ' ', title)
+    cleaned = ' '.join(cleaned.split())  # Normalize whitespace
+    if cleaned not in variations and cleaned != title:
+        variations.append(cleaned)
+    # Also try cleaned version without accents
+    cleaned_no_accents = remove_accents(cleaned)
+    if cleaned_no_accents not in variations:
+        variations.append(cleaned_no_accents)
+    
+    return variations
+
 def query_notion_database(title, artist=None, album=None):
     """
     Query Notion database for a song by title, with optional artist/album confirmation.
-    Returns ISRC/UPC if found, None otherwise.
+    Uses multiple fallback strategies to handle special character variations.
+    Returns match data if found, None otherwise.
     """
     try:
         print(f"  -> Querying Notion database...")
@@ -60,10 +119,11 @@ def query_notion_database(title, artist=None, album=None):
             "Content-Type": "application/json"
         }
         
-        # Query by title (Notion uses filter syntax)
+        # Strategy 1: Try exact title match first (with original accents)
+        print(f"  -> Strategy 1: Searching for exact title (with accents)...")
         query_body = {
             "filter": {
-                "property": "Track Title",  # Notion database uses "Track Title" as title property
+                "property": "Track Title",
                 "title": {
                     "contains": title
                 }
@@ -84,6 +144,118 @@ def query_notion_database(title, artist=None, album=None):
         
         data = response.json()
         results = data.get('results', [])
+        
+        # Strategy 2: Try exact match with equals (more precise than contains)
+        if not results:
+            print(f"  -> Strategy 2: Trying exact match (equals filter)...")
+            query_body = {
+                "filter": {
+                    "property": "Track Title",
+                    "title": {
+                        "equals": title
+                    }
+                }
+            }
+            
+            response = requests.post(
+                url,
+                headers=headers,
+                json=query_body,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                new_results = data.get('results', [])
+                if new_results:
+                    print(f"  -> Found {len(new_results)} results with exact match")
+                    results.extend(new_results)
+        
+        # Strategy 3: Try title variations (including accent-free)
+        if not results:
+            print(f"  -> Strategy 3: Trying title variations...")
+            title_variations = normalize_title_for_search(title)
+            print(f"  -> Generated {len(title_variations)} title variations")
+            
+            for i, variation in enumerate(title_variations, 1):
+                if variation == title:
+                    continue  # Already tried in Strategy 1
+                
+                print(f"  -> Strategy 3.{i}: Trying variation: '{variation}'")
+                
+                # Try both "contains" and "equals" for each variation
+                for match_type in ["equals", "contains"]:
+                    query_body = {
+                        "filter": {
+                            "property": "Track Title",
+                            "title": {
+                                match_type: variation
+                            }
+                        }
+                    }
+                    
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        json=query_body,
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        new_results = data.get('results', [])
+                        if new_results:
+                            print(f"  -> Found {len(new_results)} results with variation '{variation}' (using {match_type})")
+                            results.extend(new_results)
+                            break  # Found results, move to next variation
+                
+                # If we found results, continue to process them (don't break outer loop yet)
+                if results:
+                    break  # Found results, stop trying more variations
+        
+        # Strategy 4: If still no results, try broader search (any word from title)
+        if not results:
+            print(f"  -> Strategy 4: Trying broader word-based search...")
+            # Split title into words and try searching for any significant word
+            # Try both original and accent-free versions
+            words_original = re.findall(r'\b\w+\b', title)
+            title_for_words = remove_accents(title)
+            words_accent_free = re.findall(r'\b\w+\b', title_for_words)
+            
+            # Combine and deduplicate
+            all_words = list(set(words_original + words_accent_free))
+            # Filter out very short words
+            significant_words = [w for w in all_words if len(w) > 3]
+            
+            if significant_words:
+                # Try searching with each significant word (try longest first)
+                significant_words.sort(key=len, reverse=True)
+                
+                for word in significant_words:
+                    print(f"  -> Strategy 4: Searching for word: '{word}'")
+                    query_body = {
+                        "filter": {
+                            "property": "Track Title",
+                            "title": {
+                                "contains": word
+                            }
+                        }
+                    }
+                    
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        json=query_body,
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        new_results = data.get('results', [])
+                        if new_results:
+                            print(f"  -> Found {len(new_results)} results with word '{word}'")
+                            results.extend(new_results)
+                            break  # Found results, stop trying more words
         
         print(f"  -> Found {len(results)} potential matches in Notion")
         
@@ -129,13 +301,26 @@ def query_notion_database(title, artist=None, album=None):
             confidence = 0
             is_exact_title = False
             
-            # Title match (required)
+            # Normalize titles for comparison (remove accents for fuzzy matching)
+            title_normalized = remove_accents(title.lower()) if title else ""
+            notion_title_normalized = remove_accents(notion_title.lower()) if notion_title else ""
+            
+            # Title match (required) - try multiple comparison methods
             if notion_title and title:
+                # Exact match (case-insensitive)
                 if notion_title.lower() == title.lower():
                     confidence += 50  # Exact match
                     is_exact_title = True
+                # Exact match after removing accents
+                elif notion_title_normalized == title_normalized:
+                    confidence += 50  # Exact match (normalized)
+                    is_exact_title = True
+                # Partial match (case-insensitive)
                 elif title.lower() in notion_title.lower() or notion_title.lower() in title.lower():
                     confidence += 30  # Partial match
+                # Partial match after removing accents
+                elif title_normalized in notion_title_normalized or notion_title_normalized in title_normalized:
+                    confidence += 30  # Partial match (normalized)
             
             # Artist match (strong confirmation)
             if artist and notion_artist:
@@ -425,6 +610,15 @@ def query_notion_for_isrc(music_id, token):
             print(f"  -> Updating FileMaker with Notion data...")
             
             update_data = {}
+            
+            # IMPORTANT: Update song title if Notion has a different (correct) version
+            notion_title = notion_match.get('title', '').strip()
+            if notion_title and notion_title != song_name:
+                print(f"  -> Updating song title with correct characters from Notion:")
+                print(f"     FileMaker: '{song_name}'")
+                print(f"     Notion:    '{notion_title}'")
+                update_data[FIELD_MAPPING["song_name"]] = notion_title
+                print(f"     Song Name: {notion_title}")
             
             # Only update fields that are currently empty in FileMaker
             if not has_isrc and notion_match.get('isrc_upc'):
